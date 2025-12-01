@@ -1,0 +1,26 @@
+{
+  "name": "video-track-component-demo",
+  "version": "0.1.0",
+  "author": "caohongz",
+  "license": "MIT",
+  "type": "module",
+  "private": false,
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue-clip-track": "^0.1.1",
+    "@webav/av-cliper": "^1.2.7",
+    "element-plus": "^2.11.8",
+    "pinia": "^2.1.7",
+    "vue": "^3.4.21"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "typescript": "^5.4.2",
+    "vite": "^5.1.6",
+    "vue-tsc": "^2.0.6"
+  }
+}
