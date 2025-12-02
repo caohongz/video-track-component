@@ -7,6 +7,7 @@ import {
   type TransitionClip,
   type Clip,
 } from 'vue-clip-track';
+import { getVideoPath, getAudioPath } from './assetPath';
 
 // 生成模拟视频轨道
 export function createMockVideoTrack(order: number, isMain = false): Track {
@@ -18,7 +19,7 @@ export function createMockVideoTrack(order: number, isMain = false): Track {
       startTime: 0,
       endTime: 5,
       selected: false,
-      sourceUrl: '/assets/video/bunny_0.mp4',
+      sourceUrl: getVideoPath('bunny_0.mp4'),
       originalDuration: 23,
       trimStart: 0,
       trimEnd: 5,
@@ -32,7 +33,7 @@ export function createMockVideoTrack(order: number, isMain = false): Track {
       startTime: 6,
       endTime: 12,
       selected: false,
-      sourceUrl: '/assets/video/bunny_1.mp4',
+      sourceUrl: getVideoPath('bunny_1.mp4'),
       originalDuration: 20,
       trimStart: 2,
       trimEnd: 8,
@@ -46,7 +47,7 @@ export function createMockVideoTrack(order: number, isMain = false): Track {
       startTime: 15,
       endTime: 20,
       selected: false,
-      sourceUrl: '/assets/video/bunny_2.mp4',
+      sourceUrl: getVideoPath('bunny_2.mp4'),
       originalDuration: 16,
       trimStart: 1,
       trimEnd: 6,
@@ -84,7 +85,7 @@ export function createMockAudioTrack(order: number): Track {
       startTime: 0,
       endTime: 8,
       selected: false,
-      sourceUrl: '/assets/audio/44.1kHz-2chan.mp3',
+      sourceUrl: getAudioPath('44.1kHz-2chan.mp3'),
       originalDuration: 0, // 将在加载时更新
       trimStart: 0,
       trimEnd: 8,
@@ -99,7 +100,7 @@ export function createMockAudioTrack(order: number): Track {
       startTime: 10,
       endTime: 18,
       selected: false,
-      sourceUrl: '/assets/audio/16kHz-1chan.mp3',
+      sourceUrl: getAudioPath('16kHz-1chan.mp3'),
       originalDuration: 0, // 将在加载时更新
       trimStart: 1,
       trimEnd: 9,
@@ -268,7 +269,7 @@ export function createMockMainTrackWithTransitions(): Track {
       startTime: 0,
       endTime: 5,
       selected: false,
-      sourceUrl: '/assets/video/bunny_0.mp4',
+      sourceUrl: getVideoPath('bunny_0.mp4'),
       originalDuration: 23,
       trimStart: 0,
       trimEnd: 5,
@@ -295,7 +296,7 @@ export function createMockMainTrackWithTransitions(): Track {
       startTime: 5,
       endTime: 11,
       selected: false,
-      sourceUrl: '/assets/video/bunny_1.mp4',
+      sourceUrl: getVideoPath('bunny_1.mp4'),
       originalDuration: 20,
       trimStart: 2,
       trimEnd: 8,
@@ -322,7 +323,7 @@ export function createMockMainTrackWithTransitions(): Track {
       startTime: 11,
       endTime: 16,
       selected: false,
-      sourceUrl: '/assets/video/bunny_2.mp4',
+      sourceUrl: getVideoPath('bunny_2.mp4'),
       originalDuration: 16,
       trimStart: 1,
       trimEnd: 6,
@@ -360,7 +361,7 @@ export function createMockMainTrack(): Track {
       startTime: 5, // 连续排列，无间隙
       endTime: 11,
       selected: false,
-      sourceUrl: '/assets/video/bunny_1.mp4',
+      sourceUrl: getVideoPath('bunny_1.mp4'),
       originalDuration: 20,
       trimStart: 2,
       trimEnd: 8,
@@ -374,7 +375,7 @@ export function createMockMainTrack(): Track {
       startTime: 11, // 连续排列，无间隙
       endTime: 16,
       selected: false,
-      sourceUrl: '/assets/video/bunny_2.mp4',
+      sourceUrl: getVideoPath('bunny_2.mp4'),
       originalDuration: 16,
       trimStart: 1,
       trimEnd: 6,

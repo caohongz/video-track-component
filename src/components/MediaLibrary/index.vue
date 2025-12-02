@@ -99,6 +99,7 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, watch } from 'vue'
 import { extractVideoThumbnails, extractAudioWaveform } from 'vue-clip-track'
+import { getVideoPath, getAudioPath } from '@/utils/assetPath'
 
 const activeTab = ref('media')
 
@@ -139,20 +140,20 @@ interface AudioItem {
 
 // 视频素材 - 使用 public/assets 目录下的真实视频
 const mediaItems = ref<MediaItem[]>([
-  { id: '/assets/video/bunny_0.mp4', type: 'video', name: 'Bunny 0', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', url: '/assets/video/bunny_0.mp4', loading: true },
-  { id: '/assets/video/bunny_1.mp4', type: 'video', name: 'Bunny 1', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', url: '/assets/video/bunny_1.mp4', loading: true },
-  { id: '/assets/video/bunny_2.mp4', type: 'video', name: 'Bunny 2', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', url: '/assets/video/bunny_2.mp4', loading: true },
-  { id: '/assets/video/webav1.mp4', type: 'video', name: 'WebAV 1', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)', url: '/assets/video/webav1.mp4', loading: true },
-  { id: '/assets/video/webav2.mp4', type: 'video', name: 'WebAV 2', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)', url: '/assets/video/webav2.mp4', loading: true },
-  { id: '/assets/video/123.mp4', type: 'video', name: '视频 123', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #30cfd0 0%, #330867 100%)', url: '/assets/video/123.mp4', loading: true },
-  { id: '/assets/video/223.mp4', type: 'video', name: '视频 223', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)', url: '/assets/video/223.mp4', loading: true },
-  { id: '/assets/video/323.mp4', type: 'video', name: '视频 323', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%)', url: '/assets/video/323.mp4', loading: true }
+  { id: getVideoPath('bunny_0.mp4'), type: 'video', name: 'Bunny 0', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', url: getVideoPath('bunny_0.mp4'), loading: true },
+  { id: getVideoPath('bunny_1.mp4'), type: 'video', name: 'Bunny 1', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', url: getVideoPath('bunny_1.mp4'), loading: true },
+  { id: getVideoPath('bunny_2.mp4'), type: 'video', name: 'Bunny 2', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', url: getVideoPath('bunny_2.mp4'), loading: true },
+  { id: getVideoPath('webav1.mp4'), type: 'video', name: 'WebAV 1', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)', url: getVideoPath('webav1.mp4'), loading: true },
+  { id: getVideoPath('webav2.mp4'), type: 'video', name: 'WebAV 2', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)', url: getVideoPath('webav2.mp4'), loading: true },
+  { id: getVideoPath('123.mp4'), type: 'video', name: '视频 123', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #30cfd0 0%, #330867 100%)', url: getVideoPath('123.mp4'), loading: true },
+  { id: getVideoPath('223.mp4'), type: 'video', name: '视频 223', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)', url: getVideoPath('223.mp4'), loading: true },
+  { id: getVideoPath('323.mp4'), type: 'video', name: '视频 323', duration: 0, icon: '🎥', color: 'linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%)', url: getVideoPath('323.mp4'), loading: true }
 ])
 
 // 音频素材 - 使用真实音频文件
 const audioItems = ref<AudioItem[]>([
-  { id: '/assets/audio/44.1kHz-2chan.mp3', type: 'audio', name: '44.1kHz 立体声', duration: 0, url: '/assets/audio/44.1kHz-2chan.mp3', loading: true },
-  { id: '/assets/audio/16kHz-1chan.mp3', type: 'audio', name: '16kHz 单声道', duration: 0, url: '/assets/audio/16kHz-1chan.mp3', loading: true }
+  { id: getAudioPath('44.1kHz-2chan.mp3'), type: 'audio', name: '44.1kHz 立体声', duration: 0, url: getAudioPath('44.1kHz-2chan.mp3'), loading: true },
+  { id: getAudioPath('16kHz-1chan.mp3'), type: 'audio', name: '16kHz 单声道', duration: 0, url: getAudioPath('16kHz-1chan.mp3'), loading: true }
 ])
 
 // 字幕/文本（默认 3 秒）
