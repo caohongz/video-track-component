@@ -32,45 +32,6 @@
         </div>
       </div>
 
-      <!-- 播放控制 -->
-      <div class="preview-controls">
-        <div class="controls-group">
-          <button class="control-btn control-btn--primary" :title="isPlaying ? '暂停' : '播放'" @click="togglePlayback">
-            {{ isPlaying ? '⏸' : '▶' }}
-          </button>
-          <button class="control-btn" title="停止" @click="handleStop">
-            ⏹
-          </button>
-          <button class="control-btn" title="回到开始" @click="handleRewind">
-            ⏮
-          </button>
-        </div>
-
-        <div class="controls-divider"></div>
-
-        <div class="controls-group">
-          <button class="control-btn" title="上一帧" @click="handlePreviousFrame">
-            ⏪
-          </button>
-          <button class="control-btn" title="下一帧" @click="handleNextFrame">
-            ⏩
-          </button>
-        </div>
-
-        <div class="controls-divider"></div>
-
-        <div class="controls-group">
-          <span class="control-label">速度</span>
-          <select v-model.number="playbackSpeed" class="control-select" @change="handleSpeedChange">
-            <option :value="0.25">0.25x</option>
-            <option :value="0.5">0.5x</option>
-            <option :value="1">1x</option>
-            <option :value="1.5">1.5x</option>
-            <option :value="2">2x</option>
-          </select>
-        </div>
-      </div>
-
       <!-- 播放进度条 -->
       <div class="preview-progress">
         <input type="range" min="0" :max="durationInSeconds" :value="currentTimeInSeconds" step="0.01"
@@ -86,12 +47,62 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch, provide, reactive } from 'vue'
 import { AVCanvas } from '@webav/av-canvas'
-import { usePlaybackStore } from 'vue-clip-track'
+import { MP4Clip, AudioClip, ImgClip, VisibleSprite, renderTxt2ImgBitmap } from '@webav/av-cliper'
+import { usePlaybackStore, useTracksStore } from 'vue-clip-track'
+import type { Clip, MediaClip, SubtitleClip, TextClip } from 'vue-clip-track'
 import DebugPanel from '../DebugPanel/index.vue'
 
+// 定义事件
+const emit = defineEmits<{
+  (e: 'play'): void
+  (e: 'pause'): void
+}>()
+
+// AVCanvas 调试数据类型
+export interface AVCanvasDebugData {
+  initialized: boolean
+  canvasWidth: number
+  canvasHeight: number
+  isPlaying: boolean
+  currentTime: number // 微秒
+  duration: number // 微秒
+  playbackSpeed: number
+  spriteCount: number
+  sprites: Array<{
+    clipId: string
+    type: string
+    offset: number
+    duration: number
+    visible: boolean
+    opacity: number
+    rect: { x: number; y: number; w: number; h: number; angle: number }
+    zIndex: number
+  }>
+}
+
+// 扩展 Clip 类型，包含新增的空间属性
+type ExtendedClipProps = {
+  rect?: {
+    x: number
+    y: number
+    w: number
+    h: number
+    angle: number
+    fixedAspectRatio?: boolean
+    fixedScaleCenter?: boolean
+  }
+  visible?: boolean
+  opacity?: number
+  flip?: 'horizontal' | 'vertical' | null
+  zIndex?: number
+}
+
+type ExtendedClip = Clip & ExtendedClipProps
+
 const playbackStore = usePlaybackStore()
+const tracksStore = useTracksStore()
 const playbackSpeed = ref(1)
 const activeTab = ref<'player' | 'debug'>('player')
 
@@ -103,9 +114,608 @@ const isPlaying = ref(false)
 const currentTime = ref(0) // 微秒
 const duration = ref(playbackStore.duration * 1e6) // 转换为微秒
 
+// 防止循环更新的标志
+let isUpdatingFromCanvas = false
+let isUpdatingFromStore = false
+
+// 防止并发同步的标志
+let isSyncing = false
+let pendingSync = false
+
+// Canvas 尺寸常量
+const CANVAS_WIDTH = 1920
+const CANVAS_HEIGHT = 1080
+
+// 存储 clip ID 与 sprite 的映射关系
+const clipSpriteMap = new Map<string, VisibleSprite>()
+// 存储 sprite 事件取消监听函数
+const spriteListenerMap = new Map<string, () => void>()
+// 存储 clip 的关键属性快照（用于检测需要重建 sprite 的变化）
+const clipSnapshotMap = new Map<string, {
+  trimStart: number
+  trimEnd: number
+  playbackRate: number
+  sourceUrl: string
+  text?: string
+  volume: number
+}>()
+
+// AVCanvas 调试数据
+const avCanvasDebugData = reactive<AVCanvasDebugData>({
+  initialized: false,
+  canvasWidth: CANVAS_WIDTH,
+  canvasHeight: CANVAS_HEIGHT,
+  isPlaying: false,
+  currentTime: 0,
+  duration: 0,
+  playbackSpeed: 1,
+  spriteCount: 0,
+  sprites: []
+})
+
+// 提供调试数据给子组件
+provide('avCanvasDebugData', avCanvasDebugData)
+
+// 更新调试数据中的 sprites 信息
+function updateDebugSprites() {
+  const sprites: AVCanvasDebugData['sprites'] = []
+  for (const [clipId, sprite] of clipSpriteMap) {
+    const clip = findClipById(clipId)
+    sprites.push({
+      clipId,
+      type: clip?.type || 'unknown',
+      offset: sprite.time.offset,
+      duration: sprite.time.duration,
+      visible: sprite.visible,
+      opacity: sprite.opacity,
+      rect: {
+        x: sprite.rect.x,
+        y: sprite.rect.y,
+        w: sprite.rect.w,
+        h: sprite.rect.h,
+        angle: sprite.rect.angle
+      },
+      zIndex: sprite.zIndex
+    })
+  }
+  avCanvasDebugData.sprites = sprites
+  avCanvasDebugData.spriteCount = sprites.length
+}
+
+// 计算所有 sprites 的最大结束时间（用于获取实际可播放时长）
+function getMaxSpriteDuration(): number {
+  let maxEndTime = 0
+  for (const sprite of clipSpriteMap.values()) {
+    const endTime = sprite.time.offset + sprite.time.duration
+    if (endTime > maxEndTime) {
+      maxEndTime = endTime
+    }
+  }
+  return maxEndTime
+}
+
+// 获取有效的播放时长（优先使用 sprites 计算，否则使用 playbackStore）
+function getEffectiveDuration(): number {
+  const spriteDuration = getMaxSpriteDuration()
+  const storeDuration = playbackStore.duration * 1e6
+  // 使用两者中的较大值，确保有有效时长
+  return Math.max(spriteDuration, storeDuration, 0)
+}
+
 // 计算属性：将微秒转换为秒
 const currentTimeInSeconds = computed(() => currentTime.value / 1e6)
 const durationInSeconds = computed(() => duration.value / 1e6)
+
+// 计算 sprite 在 canvas 中的位置和尺寸（保持宽高比居中显示）
+function calculateSpriteRect(mediaWidth: number, mediaHeight: number) {
+  const mediaAspect = mediaWidth / mediaHeight
+  const canvasAspect = CANVAS_WIDTH / CANVAS_HEIGHT
+
+  let w: number, h: number, x: number, y: number
+
+  if (mediaAspect > canvasAspect) {
+    // 媒体更宽，以宽度为基准
+    w = CANVAS_WIDTH
+    h = CANVAS_WIDTH / mediaAspect
+    x = 0
+    y = (CANVAS_HEIGHT - h) / 2
+  } else {
+    // 媒体更高，以高度为基准
+    h = CANVAS_HEIGHT
+    w = CANVAS_HEIGHT * mediaAspect
+    x = (CANVAS_WIDTH - w) / 2
+    y = 0
+  }
+
+  return { x, y, w, h }
+}
+
+// 获取 clip 的关键属性快照（用于检测是否需要重建 sprite）
+function getClipSnapshot(clip: Clip) {
+  const mediaClip = clip as MediaClip
+  const textClip = clip as SubtitleClip | TextClip
+  return {
+    trimStart: mediaClip.trimStart || 0,
+    trimEnd: mediaClip.trimEnd || 0,
+    playbackRate: mediaClip.playbackRate || 1,
+    sourceUrl: mediaClip.sourceUrl || '',
+    text: textClip.text || '',
+    volume: (mediaClip as any).volume ?? 1  // 音量变化需要重建 sprite
+  }
+}
+
+// 检查 clip 的关键属性是否发生变化（需要重建 sprite）
+function needsRebuildSprite(clip: Clip): boolean {
+  const oldSnapshot = clipSnapshotMap.get(clip.id)
+  if (!oldSnapshot) return true // 没有快照，需要创建
+
+  const newSnapshot = getClipSnapshot(clip)
+
+  // 比较关键属性
+  return (
+    oldSnapshot.trimStart !== newSnapshot.trimStart ||
+    oldSnapshot.trimEnd !== newSnapshot.trimEnd ||
+    oldSnapshot.playbackRate !== newSnapshot.playbackRate ||
+    oldSnapshot.sourceUrl !== newSnapshot.sourceUrl ||
+    oldSnapshot.text !== newSnapshot.text ||
+    oldSnapshot.volume !== newSnapshot.volume  // 音量变化需要重建
+  )
+}
+
+// 根据 clipId 查找 clip
+function findClipById(clipId: string): Clip | null {
+  for (const track of tracksStore.tracks) {
+    for (const clip of track.clips) {
+      if (clip.id === clipId) {
+        return clip
+      }
+    }
+  }
+  return null
+}
+
+// 同步 sprite 属性到 clip
+function syncSpriteToClip(clipId: string, sprite: VisibleSprite) {
+  const clip = findClipById(clipId)
+  if (!clip) return
+
+  // 防止循环更新
+  isUpdatingFromCanvas = true
+
+  // 更新 clip 的 rect 属性
+  tracksStore.updateClip(clipId, {
+    rect: {
+      x: sprite.rect.x,
+      y: sprite.rect.y,
+      w: sprite.rect.w,
+      h: sprite.rect.h,
+      angle: sprite.rect.angle,
+      fixedAspectRatio: sprite.rect.fixedAspectRatio,
+      fixedScaleCenter: sprite.rect.fixedScaleCenter,
+    },
+    opacity: sprite.opacity,
+    visible: sprite.visible,
+    flip: sprite.flip,
+    zIndex: sprite.zIndex,
+  })
+
+  console.log(`[Sync] Sprite -> Clip ${clipId}:`, {
+    rect: { x: sprite.rect.x, y: sprite.rect.y, w: sprite.rect.w, h: sprite.rect.h, angle: sprite.rect.angle },
+    opacity: sprite.opacity,
+  })
+
+  setTimeout(() => {
+    isUpdatingFromCanvas = false
+  }, 0)
+}
+
+// 为 sprite 设置属性变化监听
+function setupSpriteListeners(clipId: string, sprite: VisibleSprite) {
+  // 移除旧的监听器
+  const oldUnsubscribe = spriteListenerMap.get(clipId)
+  if (oldUnsubscribe) {
+    oldUnsubscribe()
+  }
+
+  // 监听 rect 属性变化
+  const unsubscribeRect = sprite.rect.on('propsChange', (changedProps) => {
+    if (isUpdatingFromStore) return
+    console.log(`[Event] Sprite rect changed for clip ${clipId}:`, changedProps)
+    syncSpriteToClip(clipId, sprite)
+  })
+
+  // 监听 sprite 属性变化（zIndex 等）
+  const unsubscribeSprite = sprite.on('propsChange', (changedProps) => {
+    if (isUpdatingFromStore) return
+    console.log(`[Event] Sprite props changed for clip ${clipId}:`, changedProps)
+    syncSpriteToClip(clipId, sprite)
+  })
+
+  // 合并取消监听函数
+  spriteListenerMap.set(clipId, () => {
+    unsubscribeRect()
+    unsubscribeSprite()
+  })
+}
+
+// 根据 clip 创建对应的 Sprite
+async function createSpriteFromClip(clip: Clip): Promise<VisibleSprite | null> {
+  try {
+    const mediaClip = clip as MediaClip
+    const extClip = clip as ExtendedClip // 类型转换以访问新属性
+    let sprite: VisibleSprite | null = null
+    let originalWidth = 0
+    let originalHeight = 0
+
+    // 安全边界阈值（秒），避免在边界处 split 导致找不到采样点
+    const SPLIT_SAFETY_MARGIN = 0.1
+
+    if (clip.type === 'video' && mediaClip.sourceUrl) {
+      // 创建视频 Sprite
+      const response = await fetch(mediaClip.sourceUrl)
+      if (!response.ok) {
+        console.warn(`Failed to fetch video: ${mediaClip.sourceUrl}`)
+        return null
+      }
+      // 获取视频音量设置（默认为 1）
+      const volume = (mediaClip as any).volume ?? 1
+      let mp4Clip = new MP4Clip(response.body!, { audio: { volume } })
+      await mp4Clip.ready
+      originalWidth = mp4Clip.meta.width
+      originalHeight = mp4Clip.meta.height
+
+      // 处理 trimStart 和 trimEnd
+      // trimStart: 视频素材内部的起始时间（秒）
+      // trimEnd: 视频素材内部的结束时间（秒）
+      const trimStart = mediaClip.trimStart || 0
+      const trimEnd = mediaClip.trimEnd || (mp4Clip.meta.duration / 1e6) // 转换为秒
+      const playbackRate = mediaClip.playbackRate || 1
+      const originalDuration = mp4Clip.meta.duration / 1e6 // 秒
+
+      // 使用 split 方法处理 trim
+      // trimStart: 从视频的第 trimStart 秒开始播放
+      // trimEnd: 播放到视频的第 trimEnd 秒
+      // 只有当 trimStart > 安全边界 时才需要分割前面的部分
+      if (trimStart > SPLIT_SAFETY_MARGIN && trimStart < originalDuration - SPLIT_SAFETY_MARGIN) {
+        console.log(`[Video] Splitting at trimStart=${trimStart}s (${trimStart * 1e6} us)`)
+        try {
+          const [beforePart, afterPart] = await mp4Clip.split(trimStart * 1e6)
+          beforePart.destroy() // 销毁前面不需要的部分
+          mp4Clip = afterPart
+          await mp4Clip.ready
+          console.log(`[Video] After trimStart split, new duration=${mp4Clip.meta.duration / 1e6}s`)
+        } catch (splitError) {
+          console.warn(`[Video] Failed to split at trimStart, using original clip:`, splitError)
+        }
+      }
+
+      // 计算需要保留的时长（从新 clip 的起始算起）
+      const keepDuration = trimEnd - trimStart
+      const currentDuration = mp4Clip.meta.duration / 1e6
+      // 只有当需要裁剪的时长明显小于当前时长时才分割（留出安全边界）
+      if (keepDuration > SPLIT_SAFETY_MARGIN && keepDuration < currentDuration - SPLIT_SAFETY_MARGIN) {
+        console.log(`[Video] Splitting to keep duration=${keepDuration}s`)
+        try {
+          const [keepPart, discardPart] = await mp4Clip.split(keepDuration * 1e6)
+          discardPart.destroy() // 销毁后面不需要的部分
+          mp4Clip = keepPart
+          await mp4Clip.ready
+          console.log(`[Video] After trimEnd split, final duration=${mp4Clip.meta.duration / 1e6}s`)
+        } catch (splitError) {
+          console.warn(`[Video] Failed to split at trimEnd, using current clip:`, splitError)
+        }
+      }
+
+      sprite = new VisibleSprite(mp4Clip)
+
+      // sprite.time.offset: 在时间轴上开始显示的时间（微秒）
+      // sprite.time.duration: 在时间轴上的持续时间（微秒）
+      sprite.time.offset = clip.startTime * 1e6
+      sprite.time.duration = (clip.endTime - clip.startTime) * 1e6
+      sprite.time.playbackRate = playbackRate
+
+      console.log(`[Video] Clip ${clip.id}: trimStart=${trimStart}s, trimEnd=${trimEnd}s, playbackRate=${playbackRate}, effective duration=${mp4Clip.meta.duration / 1e6}s`)
+    } else if (clip.type === 'audio' && mediaClip.sourceUrl) {
+      // 创建音频 Sprite（音频无可视区域）
+      const response = await fetch(mediaClip.sourceUrl)
+      if (!response.ok) {
+        console.warn(`Failed to fetch audio: ${mediaClip.sourceUrl}`)
+        return null
+      }
+      // 获取音量设置（默认为 1）
+      const volume = (mediaClip as any).volume ?? 1
+      let audioClip = new AudioClip(response.body!, { volume })
+      await audioClip.ready
+
+      // 处理音频的 trim
+      const trimStart = mediaClip.trimStart || 0
+      const trimEnd = mediaClip.trimEnd || (audioClip.meta.duration / 1e6)
+      const playbackRate = mediaClip.playbackRate || 1
+      const originalDuration = audioClip.meta.duration / 1e6
+
+      // 使用 split 方法处理 trim（带安全边界检查）
+      if (trimStart > SPLIT_SAFETY_MARGIN && trimStart < originalDuration - SPLIT_SAFETY_MARGIN) {
+        try {
+          const [beforePart, afterPart] = await audioClip.split(trimStart * 1e6)
+          beforePart.destroy()
+          audioClip = afterPart
+          await audioClip.ready
+        } catch (splitError) {
+          console.warn(`[Audio] Failed to split at trimStart, using original clip:`, splitError)
+        }
+      }
+
+      const keepDuration = trimEnd - trimStart
+      const currentDuration = audioClip.meta.duration / 1e6
+      if (keepDuration > SPLIT_SAFETY_MARGIN && keepDuration < currentDuration - SPLIT_SAFETY_MARGIN) {
+        try {
+          const [keepPart, discardPart] = await audioClip.split(keepDuration * 1e6)
+          discardPart.destroy()
+          audioClip = keepPart
+          await audioClip.ready
+        } catch (splitError) {
+          console.warn(`[Audio] Failed to split at trimEnd, using current clip:`, splitError)
+        }
+      }
+
+      sprite = new VisibleSprite(audioClip)
+
+      sprite.time.offset = clip.startTime * 1e6
+      sprite.time.duration = (clip.endTime - clip.startTime) * 1e6
+      sprite.time.playbackRate = playbackRate
+
+      console.log(`[Audio] Clip ${clip.id}: trimStart=${trimStart}s, trimEnd=${trimEnd}s, effective duration=${audioClip.meta.duration / 1e6}s`)
+    } else if (clip.type === 'sticker' && mediaClip.sourceUrl) {
+      // 创建图片/贴纸 Sprite
+      const response = await fetch(mediaClip.sourceUrl)
+      if (!response.ok) {
+        console.warn(`Failed to fetch image: ${mediaClip.sourceUrl}`)
+        return null
+      }
+      const blob = await response.blob()
+      const imageBitmap = await createImageBitmap(blob)
+      const imgClip = new ImgClip(imageBitmap)
+      await imgClip.ready
+      sprite = new VisibleSprite(imgClip)
+      originalWidth = imageBitmap.width
+      originalHeight = imageBitmap.height
+
+      sprite.time.offset = clip.startTime * 1e6
+      sprite.time.duration = (clip.endTime - clip.startTime) * 1e6
+    } else if (clip.type === 'subtitle' || clip.type === 'text') {
+      // 创建字幕/文本 Sprite
+      const textClip = clip as SubtitleClip | TextClip
+      const text = textClip.text || ''
+      if (!text) return null
+
+      // 构建 CSS 样式
+      const fontSize = ('fontSize' in textClip ? textClip.fontSize : 48) || 48
+      const fontFamily = ('fontFamily' in textClip ? textClip.fontFamily : 'Arial') || 'Arial'
+      const color = ('color' in textClip ? textClip.color : 'white') || 'white'
+      const backgroundColor = ('backgroundColor' in textClip ? textClip.backgroundColor : '') || ''
+      const textAlign = ('textAlign' in textClip ? textClip.textAlign : 'center') || 'center'
+
+      let cssText = `
+        font-size: ${fontSize}px;
+        font-family: ${fontFamily};
+        color: ${color};
+        text-align: ${textAlign};
+        white-space: pre-wrap;
+        padding: 8px 16px;
+      `
+      if (backgroundColor) {
+        cssText += `background-color: ${backgroundColor};`
+      }
+
+      try {
+        const imgBitmap = await renderTxt2ImgBitmap(text, cssText)
+        const imgClip = new ImgClip(imgBitmap)
+        await imgClip.ready
+        sprite = new VisibleSprite(imgClip)
+        originalWidth = imgBitmap.width
+        originalHeight = imgBitmap.height
+
+        // 字幕默认位置：底部居中
+        if (!extClip.rect || extClip.rect.w <= 0 || extClip.rect.h <= 0) {
+          const x = (CANVAS_WIDTH - originalWidth) / 2
+          const y = CANVAS_HEIGHT - originalHeight - 80 // 距离底部 80px
+          sprite.rect.x = x
+          sprite.rect.y = y
+          sprite.rect.w = originalWidth
+          sprite.rect.h = originalHeight
+        }
+
+        sprite.time.offset = clip.startTime * 1e6
+        sprite.time.duration = (clip.endTime - clip.startTime) * 1e6
+
+        console.log(`[Subtitle] Created for clip ${clip.id}: "${text.substring(0, 20)}..." at ${sprite.rect.x}, ${sprite.rect.y}`)
+      } catch (error) {
+        console.error(`Failed to render text for clip ${clip.id}:`, error)
+        return null
+      }
+    }
+
+    if (!sprite) return null
+
+    // 设置 sprite 的空间属性（如果已保存）
+    if (extClip.rect && extClip.rect.w > 0 && extClip.rect.h > 0) {
+      sprite.rect.x = extClip.rect.x
+      sprite.rect.y = extClip.rect.y
+      sprite.rect.w = extClip.rect.w
+      sprite.rect.h = extClip.rect.h
+      sprite.rect.angle = extClip.rect.angle || 0
+      if (extClip.rect.fixedAspectRatio !== undefined) {
+        sprite.rect.fixedAspectRatio = extClip.rect.fixedAspectRatio
+      }
+      if (extClip.rect.fixedScaleCenter !== undefined) {
+        sprite.rect.fixedScaleCenter = extClip.rect.fixedScaleCenter
+      }
+      console.log(`[Sprite] Using saved rect for clip ${clip.id}:`, extClip.rect)
+    } else if (originalWidth > 0 && originalHeight > 0 && clip.type !== 'subtitle' && clip.type !== 'text') {
+      // 非字幕类型：根据原始尺寸计算默认 rect（居中显示）
+      const rect = calculateSpriteRect(originalWidth, originalHeight)
+      sprite.rect.x = rect.x
+      sprite.rect.y = rect.y
+      sprite.rect.w = rect.w
+      sprite.rect.h = rect.h
+      console.log(`[Sprite] Created default rect for clip ${clip.id}: original ${originalWidth}x${originalHeight}, display ${rect.w}x${rect.h} at (${rect.x}, ${rect.y})`)
+    }
+
+    // 设置其他属性
+    if (extClip.opacity !== undefined) {
+      sprite.opacity = extClip.opacity
+    }
+    if (extClip.visible !== undefined) {
+      sprite.visible = extClip.visible
+    }
+    if (extClip.flip) {
+      sprite.flip = extClip.flip
+    }
+    if (extClip.zIndex !== undefined) {
+      sprite.zIndex = extClip.zIndex
+    }
+
+    return sprite
+  } catch (error) {
+    console.error(`Failed to create sprite for clip ${clip.id}:`, error)
+    return null
+  }
+}
+
+// 同步轨道中的 clips 到 AVCanvas
+async function syncClipsToCanvas() {
+  if (!avCanvas) return
+
+  // 如果正在同步，标记需要再次同步
+  if (isSyncing) {
+    pendingSync = true
+    return
+  }
+  isSyncing = true
+
+  const allClips: Clip[] = []
+  for (const track of tracksStore.tracks) {
+    // 跳过隐藏的轨道 - 隐藏轨道中的 clip 不在播放器中显示
+    if (track.visible === false) {
+      continue
+    }
+    for (const clip of track.clips) {
+      // 处理视频、音频、贴纸、字幕、文本类型
+      if (['video', 'audio', 'sticker', 'subtitle', 'text'].includes(clip.type)) {
+        allClips.push(clip)
+      }
+    }
+  }
+
+  // 获取当前已有的 clip IDs
+  const currentClipIds = new Set(allClips.map(c => c.id))
+
+  // 移除不再存在的 sprites、监听器和快照
+  for (const [clipId, sprite] of clipSpriteMap) {
+    if (!currentClipIds.has(clipId)) {
+      // 移除监听器
+      const unsubscribe = spriteListenerMap.get(clipId)
+      if (unsubscribe) {
+        unsubscribe()
+        spriteListenerMap.delete(clipId)
+      }
+      avCanvas.removeSprite(sprite)
+      clipSpriteMap.delete(clipId)
+      clipSnapshotMap.delete(clipId)
+      console.log(`Removed sprite for clip: ${clipId}`)
+    }
+  }
+
+  // 添加新的 sprites 或更新现有的
+  for (const clip of allClips) {
+    const extClip = clip as ExtendedClip
+    const existingSprite = clipSpriteMap.get(clip.id)
+
+    // 检查是否需要重建 sprite（关键属性变化）
+    const shouldRebuild = existingSprite && needsRebuildSprite(clip)
+
+    if (shouldRebuild && existingSprite) {
+      // 需要重建 sprite：移除旧的
+      console.log(`[Rebuild] Clip ${clip.id} needs rebuild due to trim/playback changes`)
+      const unsubscribe = spriteListenerMap.get(clip.id)
+      if (unsubscribe) {
+        unsubscribe()
+        spriteListenerMap.delete(clip.id)
+      }
+      avCanvas.removeSprite(existingSprite)
+      clipSpriteMap.delete(clip.id)
+      clipSnapshotMap.delete(clip.id)
+    }
+
+    const currentSprite = clipSpriteMap.get(clip.id)
+
+    if (currentSprite) {
+      // 更新现有 sprite 的时间（来自 store 的更新，设置标志防止循环）
+      if (!isUpdatingFromCanvas) {
+        isUpdatingFromStore = true
+        currentSprite.time.offset = clip.startTime * 1e6
+        currentSprite.time.duration = (clip.endTime - clip.startTime) * 1e6
+
+        // 同步其他属性（如果来自 store 更新）
+        if (extClip.rect && extClip.rect.w > 0 && extClip.rect.h > 0) {
+          currentSprite.rect.x = extClip.rect.x
+          currentSprite.rect.y = extClip.rect.y
+          currentSprite.rect.w = extClip.rect.w
+          currentSprite.rect.h = extClip.rect.h
+          currentSprite.rect.angle = extClip.rect.angle || 0
+        }
+        if (extClip.opacity !== undefined) {
+          currentSprite.opacity = extClip.opacity
+        }
+        if (extClip.visible !== undefined) {
+          currentSprite.visible = extClip.visible
+        }
+        if (extClip.flip !== undefined) {
+          currentSprite.flip = extClip.flip
+        }
+        if (extClip.zIndex !== undefined) {
+          currentSprite.zIndex = extClip.zIndex
+        }
+
+        setTimeout(() => {
+          isUpdatingFromStore = false
+        }, 0)
+      }
+    } else {
+      // 创建新的 sprite
+      const sprite = await createSpriteFromClip(clip)
+      if (sprite) {
+        await avCanvas.addSprite(sprite)
+        clipSpriteMap.set(clip.id, sprite)
+        // 保存 clip 的关键属性快照
+        clipSnapshotMap.set(clip.id, getClipSnapshot(clip))
+        // 设置属性变化监听
+        setupSpriteListeners(clip.id, sprite)
+        console.log(`Added sprite for clip: ${clip.id}`)
+      }
+    }
+  }
+
+  hasSprites.value = clipSpriteMap.size > 0
+
+  // 更新调试数据
+  updateDebugSprites()
+
+  // 更新有效播放时长
+  const effectiveDuration = getEffectiveDuration()
+  if (effectiveDuration > 0) {
+    duration.value = effectiveDuration
+    avCanvasDebugData.duration = effectiveDuration
+  }
+
+  isSyncing = false
+
+  // 如果有待处理的同步请求，再次同步
+  if (pendingSync) {
+    pendingSync = false
+    await syncClipsToCanvas()
+  }
+}
 
 // 初始化 AVCanvas
 onMounted(async () => {
@@ -113,42 +723,177 @@ onMounted(async () => {
     try {
       avCanvas = new AVCanvas(canvasContainer.value, {
         bgColor: '#1a1a2e',
-        width: 1280,
-        height: 720,
+        width: CANVAS_WIDTH,
+        height: CANVAS_HEIGHT,
       })
 
       // 监听时间更新事件
       avCanvas.on('timeupdate', (time: number) => {
         currentTime.value = time
-        // 同步到 playbackStore
+        avCanvasDebugData.currentTime = time
+        // 同步到 playbackStore，设置标志防止循环
+        isUpdatingFromCanvas = true
         playbackStore.seekTo(time / 1e6)
+        // 使用 nextTick 或 setTimeout 重置标志
+        setTimeout(() => {
+          isUpdatingFromCanvas = false
+        }, 0)
       })
 
       // 监听播放状态事件
       avCanvas.on('playing', () => {
         isPlaying.value = true
+        avCanvasDebugData.isPlaying = true
+        isUpdatingFromCanvas = true
         playbackStore.play()
+        emit('play') // 发出播放事件
+        setTimeout(() => {
+          isUpdatingFromCanvas = false
+        }, 0)
       })
 
       avCanvas.on('paused', () => {
         isPlaying.value = false
+        avCanvasDebugData.isPlaying = false
+        isUpdatingFromCanvas = true
         playbackStore.pause()
+        emit('pause') // 发出暂停事件
+        setTimeout(() => {
+          isUpdatingFromCanvas = false
+        }, 0)
+      })
+
+      // 监听活动 sprite 变化（用户选择/取消选择 sprite）
+      avCanvas.on('activeSpriteChange', (sprite: VisibleSprite | null) => {
+        if (sprite) {
+          // 查找对应的 clipId
+          for (const [clipId, s] of clipSpriteMap) {
+            if (s === sprite) {
+              console.log(`[Event] Active sprite changed to clip: ${clipId}`)
+              // 同步最新属性到 clip
+              syncSpriteToClip(clipId, sprite)
+              // 选中对应的轨道 clip
+              tracksStore.selectClip(clipId)
+              break
+            }
+          }
+        } else {
+          // 取消选中所有 clip
+          tracksStore.clearSelection()
+        }
       })
 
       console.log('AVCanvas initialized successfully')
+      avCanvasDebugData.initialized = true
+
+      // 初始化时同步现有的 clips
+      await syncClipsToCanvas()
+
+      // 显示第一帧
+      if (clipSpriteMap.size > 0) {
+        avCanvas.previewFrame(0)
+      }
     } catch (error) {
       console.error('Failed to initialize AVCanvas:', error)
     }
   }
 })
 
-// 监听 playbackStore 的变化
+// 监听轨道数据变化
+watch(
+  () => tracksStore.tracks,
+  async () => {
+    await syncClipsToCanvas()
+    // 同步后显示当前帧
+    if (avCanvas && clipSpriteMap.size > 0 && !isPlaying.value) {
+      avCanvas.previewFrame(currentTime.value)
+    }
+  },
+  { deep: true }
+)
+
+// 监听 playbackStore 的时间变化（来自轨道编辑器的 seek）
+watch(
+  () => playbackStore.currentTime,
+  (newTime) => {
+    // 如果是从 canvas 更新的，跳过
+    if (isUpdatingFromCanvas) return
+
+    const timeInMicroseconds = newTime * 1e6
+    currentTime.value = timeInMicroseconds
+
+    // 如果没有在播放，预览该帧
+    if (avCanvas && !isPlaying.value) {
+      isUpdatingFromStore = true
+      avCanvas.previewFrame(timeInMicroseconds)
+      setTimeout(() => {
+        isUpdatingFromStore = false
+      }, 0)
+    }
+  }
+)
+
+// 监听 playbackStore 的播放状态变化
+watch(
+  () => playbackStore.isPlaying,
+  (newIsPlaying) => {
+    // 如果是从 canvas 更新的，跳过
+    if (isUpdatingFromCanvas) return
+
+    if (!avCanvas) return
+
+    if (newIsPlaying && !isPlaying.value) {
+      // 开始播放
+      const effectiveDuration = getEffectiveDuration()
+      if (effectiveDuration <= 0) {
+        console.warn('[Playback] No valid duration, cannot play')
+        return
+      }
+
+      // 如果已到结尾，从头开始
+      if (currentTime.value >= effectiveDuration - 1000) {
+        currentTime.value = 0
+      }
+
+      isUpdatingFromStore = true
+      avCanvas.play({
+        start: currentTime.value,
+        end: effectiveDuration,
+        playbackRate: playbackSpeed.value
+      })
+      isPlaying.value = true
+      setTimeout(() => {
+        isUpdatingFromStore = false
+      }, 0)
+    } else if (!newIsPlaying && isPlaying.value) {
+      // 暂停播放
+      isUpdatingFromStore = true
+      avCanvas.pause()
+      isPlaying.value = false
+      setTimeout(() => {
+        isUpdatingFromStore = false
+      }, 0)
+    }
+  }
+)
+
+// 监听 playbackStore 的 duration 变化
 watch(() => playbackStore.duration, (newDuration) => {
   duration.value = newDuration * 1e6
+  avCanvasDebugData.duration = newDuration * 1e6
 })
 
 // 清理 AVCanvas
 onUnmounted(() => {
+
+  // 清理所有监听器
+  for (const unsubscribe of spriteListenerMap.values()) {
+    unsubscribe()
+  }
+  spriteListenerMap.clear()
+  clipSpriteMap.clear()
+  clipSnapshotMap.clear()
+
   if (avCanvas) {
     avCanvas.destroy()
     avCanvas = null
@@ -162,83 +907,20 @@ function formatTime(seconds: number): string {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`
 }
 
-function togglePlayback() {
-  if (!avCanvas) {
-    // 如果没有 AVCanvas，使用 playbackStore 模拟
-    if (playbackStore.isPlaying) {
-      playbackStore.pause()
-      isPlaying.value = false
-    } else {
-      playbackStore.play()
-      isPlaying.value = true
-    }
-    return
-  }
-
-  if (isPlaying.value) {
-    avCanvas.pause()
-  } else {
-    avCanvas.play({ start: currentTime.value, playbackRate: playbackSpeed.value })
-  }
-}
-
-function handleStop() {
-  if (avCanvas) {
-    avCanvas.pause()
-    avCanvas.previewFrame(0)
-  }
-  currentTime.value = 0
-  isPlaying.value = false
-  playbackStore.pause()
-  playbackStore.seekTo(0)
-}
-
-function handleRewind() {
-  if (avCanvas) {
-    avCanvas.previewFrame(0)
-  }
-  currentTime.value = 0
-  playbackStore.seekTo(0)
-}
-
-function handlePreviousFrame() {
-  const frameTime = 1 / 30 * 1e6 // 假设 30fps，转换为微秒
-  const newTime = Math.max(0, currentTime.value - frameTime)
-  if (avCanvas) {
-    avCanvas.previewFrame(newTime)
-  }
-  currentTime.value = newTime
-  playbackStore.seekTo(newTime / 1e6)
-}
-
-function handleNextFrame() {
-  const frameTime = 1 / 30 * 1e6 // 假设 30fps，转换为微秒
-  const newTime = Math.min(duration.value, currentTime.value + frameTime)
-  if (avCanvas) {
-    avCanvas.previewFrame(newTime)
-  }
-  currentTime.value = newTime
-  playbackStore.seekTo(newTime / 1e6)
-}
-
 function handleSeek(event: Event) {
   const target = event.target as HTMLInputElement
   const timeInSeconds = parseFloat(target.value)
   const timeInMicroseconds = timeInSeconds * 1e6
 
+  currentTime.value = timeInMicroseconds
+  isUpdatingFromCanvas = true
+  playbackStore.seekTo(timeInSeconds)
+  setTimeout(() => {
+    isUpdatingFromCanvas = false
+  }, 0)
+
   if (avCanvas) {
     avCanvas.previewFrame(timeInMicroseconds)
-  }
-  currentTime.value = timeInMicroseconds
-  playbackStore.seekTo(timeInSeconds)
-}
-
-function handleSpeedChange() {
-  playbackStore.setPlaybackRate(playbackSpeed.value)
-  // 如果正在播放，更新播放速度
-  if (avCanvas && isPlaying.value) {
-    avCanvas.pause()
-    avCanvas.play({ start: currentTime.value, playbackRate: playbackSpeed.value })
   }
 }
 
@@ -357,17 +1039,16 @@ defineExpose({
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   min-height: 200px;
 }
 
-/* AVCanvas 样式覆盖 */
+/* 
+ * AVCanvas 样式覆盖
+ * 注意：不要使用 CSS 来缩放 canvas，否则会导致选框与 sprite 错位
+ * AVCanvas 内部使用 canvas 的实际尺寸来计算交互坐标
+ */
 .preview-screen :deep(canvas) {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  display: block;
 }
 
 .preview-screen__placeholder {

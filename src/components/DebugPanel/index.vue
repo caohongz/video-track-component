@@ -13,6 +13,12 @@
     <div class="debug-panel__content">
       <!-- 轨道数据 -->
       <div v-if="activeTab === 'tracks'" class="debug-section">
+        <div class="section-header">
+          <span class="section-title">📊 轨道概览</span>
+          <button class="copy-btn" @click="copyTracksData" title="复制轨道数据">
+            📋 复制
+          </button>
+        </div>
         <div class="debug-info">
           <div class="debug-info__item">
             <span class="label">轨道总数：</span>
@@ -59,8 +65,127 @@
         </div>
       </div>
 
+      <!-- 播放器 AVCanvas -->
+      <div v-if="activeTab === 'player'" class="debug-section">
+        <div class="section-header">
+          <span class="section-title">🎬 AVCanvas 状态</span>
+          <button class="copy-btn" @click="copyPlayerData" title="复制播放器数据">
+            📋 复制
+          </button>
+        </div>
+        <div class="debug-info">
+          <div class="debug-info__item">
+            <span class="label">初始化状态：</span>
+            <span class="value" :class="{ 'highlight': avCanvasDebugData.initialized }">
+              {{ avCanvasDebugData.initialized ? '✓ 已初始化' : '✗ 未初始化' }}
+            </span>
+          </div>
+          <div class="debug-info__item">
+            <span class="label">画布尺寸：</span>
+            <span class="value">{{ avCanvasDebugData.canvasWidth }} × {{ avCanvasDebugData.canvasHeight }}</span>
+          </div>
+          <div class="debug-info__item">
+            <span class="label">播放状态：</span>
+            <span class="value" :class="{ 'highlight': avCanvasDebugData.isPlaying }">
+              {{ avCanvasDebugData.isPlaying ? '▶ 播放中' : '⏸ 暂停' }}
+            </span>
+          </div>
+          <div class="debug-info__item">
+            <span class="label">当前时间：</span>
+            <span class="value highlight">{{ formatMicroseconds(avCanvasDebugData.currentTime) }}</span>
+          </div>
+          <div class="debug-info__item">
+            <span class="label">总时长：</span>
+            <span class="value">{{ formatMicroseconds(avCanvasDebugData.duration) }}</span>
+          </div>
+          <div class="debug-info__item">
+            <span class="label">播放进度：</span>
+            <span class="value highlight">{{ getPlaybackProgress() }}%</span>
+          </div>
+          <div class="debug-info__item">
+            <span class="label">播放速度：</span>
+            <span class="value">{{ avCanvasDebugData.playbackSpeed }}x</span>
+          </div>
+          <div class="debug-info__item">
+            <span class="label">Sprite 数量：</span>
+            <span class="value highlight">{{ avCanvasDebugData.spriteCount }}</span>
+          </div>
+          <div class="debug-info__item">
+            <span class="label">可见 Sprite：</span>
+            <span class="value">{{ getVisibleSpritesCount() }}</span>
+          </div>
+          <div class="debug-info__item">
+            <span class="label">当前帧 Sprites：</span>
+            <span class="value highlight">{{ getCurrentFrameSprites() }}</span>
+          </div>
+        </div>
+
+        <!-- Sprites 列表 -->
+        <div class="sprites-section">
+          <div class="sprites-section__title">🎭 Sprites 列表</div>
+          <div v-if="avCanvasDebugData.sprites.length > 0" class="sprites-list">
+            <div v-for="sprite in avCanvasDebugData.sprites" :key="sprite.clipId" class="sprite-item">
+              <div class="sprite-item__header">
+                <span class="sprite-item__icon">{{ getClipIcon(sprite.type) }}</span>
+                <span class="sprite-item__id">{{ sprite.clipId.substring(0, 16) }}...</span>
+                <span class="sprite-item__type">{{ sprite.type }}</span>
+              </div>
+              <div class="sprite-item__details">
+                <div class="sprite-detail">
+                  <span class="sprite-detail__label">时间偏移：</span>
+                  <span class="sprite-detail__value">{{ formatMicroseconds(sprite.offset) }}</span>
+                </div>
+                <div class="sprite-detail">
+                  <span class="sprite-detail__label">持续时间：</span>
+                  <span class="sprite-detail__value">{{ formatMicroseconds(sprite.duration) }}</span>
+                </div>
+                <div class="sprite-detail">
+                  <span class="sprite-detail__label">位置：</span>
+                  <span class="sprite-detail__value">{{ sprite.rect.x.toFixed(0) }}, {{ sprite.rect.y.toFixed(0)
+                  }}</span>
+                </div>
+                <div class="sprite-detail">
+                  <span class="sprite-detail__label">尺寸：</span>
+                  <span class="sprite-detail__value">{{ sprite.rect.w.toFixed(0) }} × {{ sprite.rect.h.toFixed(0)
+                  }}</span>
+                </div>
+                <div class="sprite-detail">
+                  <span class="sprite-detail__label">旋转：</span>
+                  <span class="sprite-detail__value">{{ sprite.rect.angle.toFixed(1) }}°</span>
+                </div>
+                <div class="sprite-detail">
+                  <span class="sprite-detail__label">透明度：</span>
+                  <span class="sprite-detail__value">{{ (sprite.opacity * 100).toFixed(0) }}%</span>
+                </div>
+                <div class="sprite-detail">
+                  <span class="sprite-detail__label">可见：</span>
+                  <span class="sprite-detail__value" :class="{ 'highlight': sprite.visible }">
+                    {{ sprite.visible ? '✓' : '✗' }}
+                  </span>
+                </div>
+                <div class="sprite-detail">
+                  <span class="sprite-detail__label">层级：</span>
+                  <span class="sprite-detail__value">{{ sprite.zIndex }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty-state">
+            <div class="empty-state__icon">🎬</div>
+            <div class="empty-state__text">暂无 Sprite</div>
+          </div>
+        </div>
+      </div>
+
       <!-- 选中的 Clips -->
       <div v-if="activeTab === 'selection'" class="debug-section">
+        <div class="section-header">
+          <span class="section-title">🎯 选中信息</span>
+          <button class="copy-btn" :disabled="tracksStore.selectedClips.length === 0" @click="copySelectionData"
+            title="复制选中数据">
+            📋 复制
+          </button>
+        </div>
         <div class="debug-info">
           <div class="debug-info__item">
             <span class="label">选中数量：</span>
@@ -84,6 +209,12 @@
 
       <!-- 历史记录 -->
       <div v-if="activeTab === 'history'" class="debug-section">
+        <div class="section-header">
+          <span class="section-title">📜 历史记录</span>
+          <button class="copy-btn" @click="copyHistoryData" title="复制历史数据">
+            📋 复制
+          </button>
+        </div>
         <div class="debug-info">
           <div class="debug-info__item">
             <span class="label">当前索引：</span>
@@ -155,6 +286,12 @@
 
       <!-- 完整 JSON -->
       <div v-if="activeTab === 'json'" class="debug-section">
+        <div class="section-header">
+          <span class="section-title">📄 完整 JSON</span>
+          <button class="copy-btn" @click="copyJsonData" title="复制 JSON 数据">
+            📋 复制
+          </button>
+        </div>
         <div class="debug-json">
           <div class="json-block">
             <div class="json-block__title">所有轨道数据</div>
@@ -167,18 +304,33 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, inject } from 'vue'
 import { useTracksStore, usePlaybackStore, useHistoryStore, useScaleStore } from 'vue-clip-track'
+import type { AVCanvasDebugData } from '../VideoPreview/index.vue'
 
 const tracksStore = useTracksStore()
 const playbackStore = usePlaybackStore()
 const historyStore = useHistoryStore()
 const scaleStore = useScaleStore()
 
+// 注入 AVCanvas 调试数据
+const avCanvasDebugData = inject<AVCanvasDebugData>('avCanvasDebugData', {
+  initialized: false,
+  canvasWidth: 0,
+  canvasHeight: 0,
+  isPlaying: false,
+  currentTime: 0,
+  duration: 0,
+  playbackSpeed: 1,
+  spriteCount: 0,
+  sprites: []
+})
+
 const activeTab = ref('tracks')
 
 const tabs = [
   { id: 'tracks', label: '轨道' },
+  { id: 'player', label: '播放器' },
   { id: 'selection', label: '选中' },
   { id: 'history', label: '历史' },
   { id: 'scale', label: '缩放' },
@@ -215,6 +367,95 @@ function getClipIcon(type: string): string {
 function formatTimestamp(timestamp: number): string {
   const date = new Date(timestamp)
   return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`
+}
+
+// 播放进度百分比
+function getPlaybackProgress(): string {
+  if (avCanvasDebugData.duration <= 0) return '0.00'
+  return ((avCanvasDebugData.currentTime / avCanvasDebugData.duration) * 100).toFixed(2)
+}
+
+// 可见 Sprites 数量
+function getVisibleSpritesCount(): number {
+  return avCanvasDebugData.sprites.filter(s => s.visible).length
+}
+
+// 当前帧显示的 Sprites 数量
+function getCurrentFrameSprites(): number {
+  const currentTime = avCanvasDebugData.currentTime
+  return avCanvasDebugData.sprites.filter(s => {
+    return currentTime >= s.offset && currentTime <= s.offset + s.duration
+  }).length
+}
+
+// 复制到剪贴板
+async function copyToClipboard(data: unknown, successMessage: string) {
+  try {
+    const jsonStr = JSON.stringify(data, null, 2)
+    await navigator.clipboard.writeText(jsonStr)
+    console.log(successMessage)
+    // 可以添加一个 toast 提示
+  } catch (error) {
+    console.error('复制失败:', error)
+  }
+}
+
+// 复制轨道数据
+function copyTracksData() {
+  const data = {
+    totalTracks: tracksStore.tracks.length,
+    totalDuration: playbackStore.duration,
+    currentTime: playbackStore.currentTime,
+    isPlaying: playbackStore.isPlaying,
+    tracks: tracksStore.tracks
+  }
+  copyToClipboard(data, '轨道数据已复制到剪贴板')
+}
+
+// 复制播放器数据
+function copyPlayerData() {
+  const data = {
+    ...avCanvasDebugData,
+    playbackProgress: getPlaybackProgress() + '%',
+    visibleSprites: getVisibleSpritesCount(),
+    currentFrameSprites: getCurrentFrameSprites()
+  }
+  copyToClipboard(data, '播放器数据已复制到剪贴板')
+}
+
+// 复制选中数据
+function copySelectionData() {
+  const data = {
+    selectedCount: tracksStore.selectedClips.length,
+    selectedClips: tracksStore.selectedClips
+  }
+  copyToClipboard(data, '选中数据已复制到剪贴板')
+}
+
+// 复制历史记录数据
+function copyHistoryData() {
+  const data = {
+    currentIndex: historyStore.currentIndex,
+    totalSnapshots: historyStore.historyStack.length,
+    canUndo: historyStore.canUndo,
+    canRedo: historyStore.canRedo,
+    historyStack: historyStore.historyStack
+  }
+  copyToClipboard(data, '历史记录已复制到剪贴板')
+}
+
+// 复制完整 JSON 数据
+function copyJsonData() {
+  copyToClipboard(tracksStore.tracks, '完整 JSON 数据已复制到剪贴板')
+}
+
+// 微秒转为可读时间字符串
+function formatMicroseconds(us: number): string {
+  const seconds = us / 1e6
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  const ms = Math.floor((seconds % 1) * 1000)
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`
 }
 </script>
 
@@ -276,6 +517,48 @@ function formatTimestamp(timestamp: number): string {
   background: var(--color-primary);
   color: white;
   font-weight: 500;
+}
+
+/* 区块头部 */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  background: var(--color-bg-light);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.copy-btn:hover:not(:disabled) {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+
+.copy-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .debug-panel__content {
@@ -580,6 +863,93 @@ function formatTimestamp(timestamp: number): string {
   color: var(--color-text-tertiary);
   text-align: center;
   line-height: 1.5;
+}
+
+/* Sprites 区域 */
+.sprites-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sprites-section__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sprites-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sprite-item {
+  background: var(--color-bg-light);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.sprite-item__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sprite-item__icon {
+  font-size: 14px;
+}
+
+.sprite-item__id {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  flex: 1;
+}
+
+.sprite-item__type {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  background: var(--color-primary);
+  color: white;
+  border-radius: var(--radius-xs);
+  text-transform: uppercase;
+}
+
+.sprite-item__details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.sprite-detail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.sprite-detail__label {
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+.sprite-detail__value {
+  color: var(--color-text-primary);
+  font-family: 'Courier New', monospace;
+  font-weight: 500;
+}
+
+.sprite-detail__value.highlight {
+  color: var(--color-primary);
 }
 
 /* 滚动条 */

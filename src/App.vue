@@ -108,7 +108,7 @@
 
         <!-- 视频预览/调试面板 -->
         <div class="workspace__panel workspace__panel--center">
-          <VideoPreview />
+          <VideoPreview @play="onPlaybackPlay" @pause="onPlaybackPause" />
         </div>
 
         <!-- 属性面板 -->

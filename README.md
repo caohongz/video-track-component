@@ -317,30 +317,6 @@ video-track-component/
 │   │   └── DebugPanel/       # 调试面板
 │   ├── App.vue               # 演示应用
 │   └── main.ts
-├── packages/
-│   └── video-track/          # 组件库源码
-│       ├── src/
-│       │   ├── components/   # 核心组件
-│       │   │   ├── index.vue       # 主组件
-│       │   │   ├── ToolsBar/       # 工具栏
-│       │   │   ├── Ruler/          # 时间线标尺
-│       │   │   ├── Tracks/         # 轨道组件
-│       │   │   └── ContextMenu/    # 右键菜单
-│       │   ├── stores/       # Pinia 状态管理
-│       │   │   ├── tracks.ts       # 轨道数据
-│       │   │   ├── playback.ts     # 播放状态
-│       │   │   ├── history.ts      # 历史记录
-│       │   │   ├── scale.ts        # 缩放状态
-│       │   │   └── drag.ts         # 拖拽状态
-│       │   ├── composables/  # Vue 组合式函数
-│       │   │   ├── useResize.ts    # 调整大小
-│       │   │   ├── useSelection.ts # 选择逻辑
-│       │   │   ├── useKeyboard.ts  # 快捷键
-│       │   │   └── useAutoScroll.ts# 自动滚动
-│       │   ├── types/        # TypeScript 类型
-│       │   ├── utils/        # 工具函数
-│       │   └── styles/       # 全局样式
-│       └── package.json
 └── ...
 ```
 

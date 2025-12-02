@@ -66,9 +66,17 @@
             <div class="property-row">
               <label class="property-label">不透明度</label>
               <div class="property-slider-group">
-                <input v-model.number="videoOpacity" type="range" min="0" max="100" class="property-slider"
-                  @input="handleUpdateClip('opacity', videoOpacity / 100)" />
-                <span class="property-slider-value">{{ videoOpacity }}%</span>
+                <input v-model.number="videoOpacity" type="range" min="0" max="100" step="1" class="property-slider"
+                  @input="handleUpdateClip('opacity', Math.round(videoOpacity) / 100)" />
+                <span class="property-slider-value">{{ Math.round(videoOpacity) }}%</span>
+              </div>
+            </div>
+            <div class="property-row">
+              <label class="property-label">音量</label>
+              <div class="property-slider-group">
+                <input v-model.number="videoVolume" type="range" min="0" max="200" step="1" class="property-slider"
+                  @input="handleUpdateClip('volume', Math.round(videoVolume) / 100)" />
+                <span class="property-slider-value">{{ Math.round(videoVolume) }}%</span>
               </div>
             </div>
             <div class="property-row">
@@ -92,9 +100,9 @@
             <div class="property-row">
               <label class="property-label">音量</label>
               <div class="property-slider-group">
-                <input v-model.number="audioVolume" type="range" min="0" max="200" class="property-slider"
-                  @input="handleUpdateClip('volume', audioVolume / 100)" />
-                <span class="property-slider-value">{{ audioVolume }}%</span>
+                <input v-model.number="audioVolume" type="range" min="0" max="200" step="1" class="property-slider"
+                  @input="handleUpdateClip('volume', Math.round(audioVolume) / 100)" />
+                <span class="property-slider-value">{{ Math.round(audioVolume) }}%</span>
               </div>
             </div>
             <div class="property-row">
@@ -202,6 +210,7 @@ const clipName = ref('')
 
 // 视频属性
 const videoOpacity = ref(100)
+const videoVolume = ref(100)
 const videoSpeed = ref(1)
 
 // 音频属性
@@ -224,12 +233,15 @@ watch(selectedClip, (clip) => {
   clipName.value = clip.name || ''
 
   if (clip.type === 'video') {
-    videoOpacity.value = ((clip as any).opacity ?? 1) * 100
+    // 使用 Math.round 取整，避免显示小数
+    videoOpacity.value = Math.round(((clip as any).opacity ?? 1) * 100)
+    videoVolume.value = Math.round(((clip as any).volume ?? 1) * 100)
     videoSpeed.value = (clip as any).speed ?? 1
   }
 
   if (clip.type === 'audio') {
-    audioVolume.value = ((clip as any).volume ?? 1) * 100
+    // 使用 Math.round 取整，避免显示小数
+    audioVolume.value = Math.round(((clip as any).volume ?? 1) * 100)
     audioFadeIn.value = (clip as any).fadeIn ?? 0
     audioFadeOut.value = (clip as any).fadeOut ?? 0
   }
