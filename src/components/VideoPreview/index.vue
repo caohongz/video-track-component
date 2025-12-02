@@ -51,8 +51,38 @@ import { ref, onMounted, onUnmounted, computed, watch, provide, reactive } from 
 import { AVCanvas } from '@webav/av-canvas'
 import { MP4Clip, AudioClip, ImgClip, VisibleSprite, renderTxt2ImgBitmap } from '@webav/av-cliper'
 import { usePlaybackStore, useTracksStore } from 'vue-clip-track'
-import type { Clip, MediaClip, SubtitleClip, TextClip } from 'vue-clip-track'
+import type { Clip, MediaClip, SubtitleClip, TextClip, FilterClip, EffectClip, Track } from 'vue-clip-track'
 import DebugPanel from '../DebugPanel/index.vue'
+
+// 滤镜类型定义
+interface FilterConfig {
+  type: string
+  value: number | Record<string, number>
+}
+
+// 特效类型定义
+interface EffectConfig {
+  type: string
+  duration: number
+  startTime: number  // clip 内的相对开始时间（秒）
+  endTime: number    // clip 内的相对结束时间（秒）
+}
+
+// 当前时间应用的滤镜列表（用于 tickInterceptor）
+interface ActiveFilter {
+  clipId: string
+  trackId: string
+  filterType: string
+  filterValue: number | Record<string, number>
+}
+
+// 当前时间应用的特效列表
+interface ActiveEffect {
+  clipId: string
+  trackId: string
+  effectType: string
+  progress: number  // 特效进度 0-1
+}
 
 // 定义事件
 const emit = defineEmits<{
@@ -140,6 +170,14 @@ const clipSnapshotMap = new Map<string, {
   volume: number
 }>()
 
+// 存储 clip 所属轨道的信息（用于计算 zIndex）
+const clipTrackMap = new Map<string, { trackId: string; trackOrder: number }>()
+
+// 当前激活的滤镜列表
+const activeFilters = ref<ActiveFilter[]>([])
+// 当前激活的特效列表
+const activeEffects = ref<ActiveEffect[]>([])
+
 // AVCanvas 调试数据
 const avCanvasDebugData = reactive<AVCanvasDebugData>({
   initialized: false,
@@ -206,6 +244,348 @@ function getEffectiveDuration(): number {
 const currentTimeInSeconds = computed(() => currentTime.value / 1e6)
 const durationInSeconds = computed(() => duration.value / 1e6)
 
+// 根据 clipId 查找 clip（提前定义，供后续函数使用）
+function findClipById(clipId: string): Clip | null {
+  for (const track of tracksStore.tracks) {
+    for (const clip of track.clips) {
+      if (clip.id === clipId) {
+        return clip
+      }
+    }
+  }
+  return null
+}
+
+// ============ 轨道 zIndex 计算 ============
+// 根据轨道顺序计算 zIndex，轨道 order 越小（越靠上），zIndex 越大（显示在上层）
+function calculateZIndexFromTrackOrder(trackOrder: number): number {
+  const maxTracks = 100 // 假设最多 100 个轨道
+  return (maxTracks - trackOrder) * 10 // 每个轨道之间留 10 的间隔
+}
+
+// 获取 clip 所属轨道的 order
+function getTrackOrderForClip(clipId: string): number {
+  const trackInfo = clipTrackMap.get(clipId)
+  if (trackInfo) {
+    return trackInfo.trackOrder
+  }
+  // 如果没有记录，尝试查找
+  const clip = findClipById(clipId)
+  if (clip) {
+    const track = tracksStore.tracks.find(t => t.id === clip.trackId)
+    if (track) {
+      return track.order
+    }
+  }
+  return 0
+}
+
+// ============ 滤镜处理 ============
+// 获取当前时间点激活的滤镜
+function getActiveFiltersAtTime(timeInSeconds: number): ActiveFilter[] {
+  const filters: ActiveFilter[] = []
+
+  for (const track of tracksStore.tracks) {
+    if (track.visible === false) continue
+    if (track.type !== 'filter') continue
+
+    for (const clip of track.clips) {
+      const filterClip = clip as FilterClip
+      if (filterClip.type === 'filter' &&
+        timeInSeconds >= filterClip.startTime &&
+        timeInSeconds <= filterClip.endTime) {
+        filters.push({
+          clipId: filterClip.id,
+          trackId: filterClip.trackId,
+          filterType: filterClip.filterType,
+          filterValue: filterClip.filterValue
+        })
+      }
+    }
+  }
+
+  return filters
+}
+
+// 获取当前时间点激活的特效
+function getActiveEffectsAtTime(timeInSeconds: number): ActiveEffect[] {
+  const effects: ActiveEffect[] = []
+
+  for (const track of tracksStore.tracks) {
+    if (track.visible === false) continue
+    if (track.type !== 'effect') continue
+
+    for (const clip of track.clips) {
+      const effectClip = clip as EffectClip
+      if (effectClip.type === 'effect' &&
+        timeInSeconds >= effectClip.startTime &&
+        timeInSeconds <= effectClip.endTime) {
+        // 计算特效进度
+        const effectTotalDuration = effectClip.endTime - effectClip.startTime
+        const elapsedTime = timeInSeconds - effectClip.startTime
+        const progress = Math.min(elapsedTime / effectTotalDuration, 1)
+
+        effects.push({
+          clipId: effectClip.id,
+          trackId: effectClip.trackId,
+          effectType: effectClip.effectType,
+          progress
+        })
+      }
+    }
+  }
+
+  return effects
+}
+
+// 将 CSS 滤镜字符串转换为 CanvasRenderingContext2D 兼容的 filter
+function buildCSSFilter(filters: ActiveFilter[]): string {
+  const filterParts: string[] = []
+
+  for (const filter of filters) {
+    // 正确提取滤镜值
+    let value: number
+    if (typeof filter.filterValue === 'number') {
+      value = filter.filterValue
+    } else if (typeof filter.filterValue === 'object' && filter.filterValue !== null) {
+      // 对象类型的值，尝试获取 value 属性或第一个数值属性
+      value = (filter.filterValue as Record<string, number>).value ??
+        Object.values(filter.filterValue).find(v => typeof v === 'number') ?? 0
+    } else {
+      value = 0
+    }
+
+    switch (filter.filterType) {
+      case 'blur':
+        // blur 的值是像素
+        filterParts.push(`blur(${value}px)`)
+        break
+      case 'brightness':
+        // brightness: 0 = 全黑, 1 = 正常, >1 = 更亮
+        // 确保值在合理范围内
+        filterParts.push(`brightness(${Math.max(0, value)})`)
+        break
+      case 'contrast':
+        // contrast: 0 = 无对比度, 1 = 正常, >1 = 更高对比度
+        filterParts.push(`contrast(${Math.max(0, value)})`)
+        break
+      case 'saturate':
+      case 'saturation':
+        // saturate: 0 = 灰度, 1 = 正常, >1 = 更饱和
+        filterParts.push(`saturate(${Math.max(0, value)})`)
+        break
+      case 'grayscale':
+        // grayscale: 0 = 正常, 1 = 完全灰度
+        filterParts.push(`grayscale(${Math.min(Math.max(0, value), 1)})`)
+        break
+      case 'sepia':
+        // sepia: 0 = 正常, 1 = 完全复古
+        filterParts.push(`sepia(${Math.min(Math.max(0, value), 1)})`)
+        break
+      case 'invert':
+        // invert: 0 = 正常, 1 = 完全反转
+        filterParts.push(`invert(${Math.min(Math.max(0, value), 1)})`)
+        break
+      case 'hue-rotate':
+        // hue-rotate: 角度值
+        filterParts.push(`hue-rotate(${value}deg)`)
+        break
+      case 'opacity':
+        // opacity: 0 = 透明, 1 = 不透明
+        filterParts.push(`opacity(${Math.min(Math.max(0, value), 1)})`)
+        break
+      case 'drop-shadow':
+        // drop-shadow 需要更复杂的参数
+        if (typeof filter.filterValue === 'object' && filter.filterValue !== null) {
+          const fv = filter.filterValue as Record<string, any>
+          const offsetX = fv.offsetX ?? 4
+          const offsetY = fv.offsetY ?? 4
+          const blurRadius = fv.blurRadius ?? 2
+          const color = fv.color ?? 'black'
+          filterParts.push(`drop-shadow(${offsetX}px ${offsetY}px ${blurRadius}px ${color})`)
+        }
+        break
+      default:
+        console.warn(`Unknown filter type: ${filter.filterType}`)
+    }
+  }
+
+  return filterParts.join(' ')
+}
+
+// 应用特效到帧数据
+function applyEffectsToFrame(
+  effects: ActiveEffect[],
+  frame: VideoFrame | ImageBitmap,
+  time: number
+): { opacity: number; transform: string } {
+  let opacity = 1
+  let transform = ''
+
+  for (const effect of effects) {
+    switch (effect.effectType) {
+      case 'fadeIn':
+        // 淡入：透明度从 0 到 1
+        opacity *= effect.progress
+        break
+      case 'fadeOut':
+        // 淡出：透明度从 1 到 0
+        opacity *= (1 - effect.progress)
+        break
+      case 'flash':
+        // 闪烁效果：使用正弦波
+        const flashFrequency = 4 // 每秒闪烁 4 次
+        opacity *= 0.5 + 0.5 * Math.sin(effect.progress * Math.PI * 2 * flashFrequency)
+        break
+      case 'pulse':
+        // 脉冲效果：放大缩小
+        const pulseScale = 1 + 0.1 * Math.sin(effect.progress * Math.PI * 4)
+        transform += ` scale(${pulseScale})`
+        break
+      case 'shake':
+        // 抖动效果
+        const shakeIntensity = 10 // 像素
+        const shakeX = Math.sin(effect.progress * Math.PI * 20) * shakeIntensity * (1 - effect.progress)
+        const shakeY = Math.cos(effect.progress * Math.PI * 20) * shakeIntensity * (1 - effect.progress)
+        transform += ` translate(${shakeX}px, ${shakeY}px)`
+        break
+      case 'zoomIn':
+        // 放大进入
+        const zoomInScale = 0.5 + 0.5 * effect.progress
+        opacity *= effect.progress
+        transform += ` scale(${zoomInScale})`
+        break
+      case 'zoomOut':
+        // 缩小退出
+        const zoomOutScale = 1 + 0.5 * effect.progress
+        opacity *= (1 - effect.progress)
+        transform += ` scale(${zoomOutScale})`
+        break
+      case 'slideInLeft':
+        const slideLeftX = -100 * (1 - effect.progress)
+        transform += ` translateX(${slideLeftX}%)`
+        break
+      case 'slideInRight':
+        const slideRightX = 100 * (1 - effect.progress)
+        transform += ` translateX(${slideRightX}%)`
+        break
+      case 'rotateIn':
+        const rotateAngle = 360 * (1 - effect.progress)
+        opacity *= effect.progress
+        transform += ` rotate(${rotateAngle}deg)`
+        break
+      case 'blur-in':
+        // 模糊进入（从模糊到清晰）
+        // 这需要通过滤镜实现，这里只返回透明度
+        opacity *= effect.progress
+        break
+      case 'blur-out':
+        opacity *= (1 - effect.progress)
+        break
+      default:
+        console.warn(`Unknown effect type: ${effect.effectType}`)
+    }
+  }
+
+  return { opacity: Math.max(0, Math.min(1, opacity)), transform }
+}
+
+// 创建带滤镜的 tickInterceptor
+// 注意：time 参数是 clip 内部的相对时间（微秒），需要转换为全局时间轴时间
+function createFilteredTickInterceptor(
+  originalClip: Clip
+): ((time: number, tickRet: any) => Promise<any>) | undefined {
+  // 如果不是视频或贴纸，不需要滤镜
+  if (originalClip.type !== 'video' && originalClip.type !== 'sticker') {
+    return undefined
+  }
+
+  // 获取播放倍速（用于时间转换）
+  const mediaClip = originalClip as MediaClip
+  const playbackRate = mediaClip.playbackRate || 1
+
+  // 缓存 canvas 和 context，避免每帧创建
+  let cachedCanvas: OffscreenCanvas | null = null
+  let cachedCtx: OffscreenCanvasRenderingContext2D | null = null
+  let cachedWidth = 0
+  let cachedHeight = 0
+
+  return async (time: number, tickRet: any) => {
+    if (!tickRet.video) return tickRet
+
+    // 计算全局时间轴时间
+    // time 是 clip 内部的相对时间（微秒），这是视频素材内部的时间
+    // 当有倍速时，视频内部时间流逝更快（playbackRate > 1）或更慢（playbackRate < 1）
+    // 在时间轴上，clip 的持续时间 = 视频实际时长 / playbackRate
+    // 因此：时间轴上经过的时间 = (内部时间 / playbackRate)
+    // 全局时间 = clip.startTime + (内部时间 / playbackRate)
+    const elapsedTimeOnTimeline = (time / 1e6) / playbackRate
+    const globalTimeInSeconds = originalClip.startTime + elapsedTimeOnTimeline
+
+    // 获取当前激活的滤镜和特效
+    const filters = getActiveFiltersAtTime(globalTimeInSeconds)
+    const effects = getActiveEffectsAtTime(globalTimeInSeconds)
+
+    // 如果没有滤镜和特效，直接返回
+    if (filters.length === 0 && effects.length === 0) {
+      return tickRet
+    }
+
+    try {
+      const frame = tickRet.video as VideoFrame | ImageBitmap
+      const width = 'displayWidth' in frame ? frame.displayWidth : frame.width
+      const height = 'displayHeight' in frame ? frame.displayHeight : frame.height
+
+      // 复用或创建 canvas（性能优化）
+      if (!cachedCanvas || cachedWidth !== width || cachedHeight !== height) {
+        cachedCanvas = new OffscreenCanvas(width, height)
+        cachedCtx = cachedCanvas.getContext('2d')
+        cachedWidth = width
+        cachedHeight = height
+      }
+
+      const ctx = cachedCtx
+      if (!ctx) return tickRet
+
+      // 清除之前的内容
+      ctx.clearRect(0, 0, width, height)
+
+      // 重置变换和滤镜
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.filter = 'none'
+      ctx.globalAlpha = 1
+
+      // 应用 CSS 滤镜
+      if (filters.length > 0) {
+        ctx.filter = buildCSSFilter(filters)
+      }
+
+      // 应用特效（透明度部分）
+      const effectResult = applyEffectsToFrame(effects, frame, time)
+      ctx.globalAlpha = effectResult.opacity
+
+      // 绘制帧
+      ctx.drawImage(frame, 0, 0)
+
+      // 如果原始帧是 VideoFrame，需要关闭它以释放内存
+      if ('close' in frame && typeof frame.close === 'function') {
+        frame.close()
+      }
+
+      // 创建新的 ImageBitmap
+      const newFrame = await createImageBitmap(cachedCanvas)
+
+      return {
+        ...tickRet,
+        video: newFrame
+      }
+    } catch (error) {
+      console.warn('Failed to apply filters/effects:', error)
+      return tickRet
+    }
+  }
+}
+
 // 计算 sprite 在 canvas 中的位置和尺寸（保持宽高比居中显示）
 function calculateSpriteRect(mediaWidth: number, mediaHeight: number) {
   const mediaAspect = mediaWidth / mediaHeight
@@ -260,18 +640,6 @@ function needsRebuildSprite(clip: Clip): boolean {
     oldSnapshot.text !== newSnapshot.text ||
     oldSnapshot.volume !== newSnapshot.volume  // 音量变化需要重建
   )
-}
-
-// 根据 clipId 查找 clip
-function findClipById(clipId: string): Clip | null {
-  for (const track of tracksStore.tracks) {
-    for (const clip of track.clips) {
-      if (clip.id === clipId) {
-        return clip
-      }
-    }
-  }
-  return null
 }
 
 // 同步 sprite 属性到 clip
@@ -339,7 +707,7 @@ function setupSpriteListeners(clipId: string, sprite: VisibleSprite) {
 }
 
 // 根据 clip 创建对应的 Sprite
-async function createSpriteFromClip(clip: Clip): Promise<VisibleSprite | null> {
+async function createSpriteFromClip(clip: Clip, track: Track): Promise<VisibleSprite | null> {
   try {
     const mediaClip = clip as MediaClip
     const extClip = clip as ExtendedClip // 类型转换以访问新属性
@@ -404,6 +772,12 @@ async function createSpriteFromClip(clip: Clip): Promise<VisibleSprite | null> {
         } catch (splitError) {
           console.warn(`[Video] Failed to split at trimEnd, using current clip:`, splitError)
         }
+      }
+
+      // 设置滤镜和特效的 tickInterceptor
+      const interceptor = createFilteredTickInterceptor(clip)
+      if (interceptor) {
+        mp4Clip.tickInterceptor = interceptor
       }
 
       sprite = new VisibleSprite(mp4Clip)
@@ -476,6 +850,13 @@ async function createSpriteFromClip(clip: Clip): Promise<VisibleSprite | null> {
       const imageBitmap = await createImageBitmap(blob)
       const imgClip = new ImgClip(imageBitmap)
       await imgClip.ready
+
+      // 设置滤镜和特效的 tickInterceptor
+      const interceptor = createFilteredTickInterceptor(clip)
+      if (interceptor) {
+        imgClip.tickInterceptor = interceptor
+      }
+
       sprite = new VisibleSprite(imgClip)
       originalWidth = imageBitmap.width
       originalHeight = imageBitmap.height
@@ -571,9 +952,20 @@ async function createSpriteFromClip(clip: Clip): Promise<VisibleSprite | null> {
     if (extClip.flip) {
       sprite.flip = extClip.flip
     }
+
+    // 设置 zIndex：优先使用 clip 自身的 zIndex，否则根据轨道顺序计算
+    // 轨道 order 越小（越靠上），zIndex 越大（显示在上层）
     if (extClip.zIndex !== undefined) {
       sprite.zIndex = extClip.zIndex
+    } else {
+      // 根据轨道顺序计算 zIndex
+      sprite.zIndex = calculateZIndexFromTrackOrder(track.order)
     }
+
+    // 记录 clip 和轨道的映射关系
+    clipTrackMap.set(clip.id, { trackId: track.id, trackOrder: track.order })
+
+    console.log(`[Sprite] Set zIndex for clip ${clip.id}: ${sprite.zIndex} (track order: ${track.order})`)
 
     return sprite
   } catch (error) {
@@ -593,7 +985,8 @@ async function syncClipsToCanvas() {
   }
   isSyncing = true
 
-  const allClips: Clip[] = []
+  // 收集所有需要处理的 clips 及其所属轨道
+  const allClipsWithTrack: { clip: Clip; track: Track }[] = []
   for (const track of tracksStore.tracks) {
     // 跳过隐藏的轨道 - 隐藏轨道中的 clip 不在播放器中显示
     if (track.visible === false) {
@@ -602,13 +995,13 @@ async function syncClipsToCanvas() {
     for (const clip of track.clips) {
       // 处理视频、音频、贴纸、字幕、文本类型
       if (['video', 'audio', 'sticker', 'subtitle', 'text'].includes(clip.type)) {
-        allClips.push(clip)
+        allClipsWithTrack.push({ clip, track })
       }
     }
   }
 
   // 获取当前已有的 clip IDs
-  const currentClipIds = new Set(allClips.map(c => c.id))
+  const currentClipIds = new Set(allClipsWithTrack.map(item => item.clip.id))
 
   // 移除不再存在的 sprites、监听器和快照
   for (const [clipId, sprite] of clipSpriteMap) {
@@ -622,12 +1015,13 @@ async function syncClipsToCanvas() {
       avCanvas.removeSprite(sprite)
       clipSpriteMap.delete(clipId)
       clipSnapshotMap.delete(clipId)
+      clipTrackMap.delete(clipId)
       console.log(`Removed sprite for clip: ${clipId}`)
     }
   }
 
   // 添加新的 sprites 或更新现有的
-  for (const clip of allClips) {
+  for (const { clip, track } of allClipsWithTrack) {
     const extClip = clip as ExtendedClip
     const existingSprite = clipSpriteMap.get(clip.id)
 
@@ -645,6 +1039,7 @@ async function syncClipsToCanvas() {
       avCanvas.removeSprite(existingSprite)
       clipSpriteMap.delete(clip.id)
       clipSnapshotMap.delete(clip.id)
+      clipTrackMap.delete(clip.id)
     }
 
     const currentSprite = clipSpriteMap.get(clip.id)
@@ -673,7 +1068,18 @@ async function syncClipsToCanvas() {
         if (extClip.flip !== undefined) {
           currentSprite.flip = extClip.flip
         }
-        if (extClip.zIndex !== undefined) {
+
+        // 更新 zIndex（如果轨道顺序变化）
+        const oldTrackInfo = clipTrackMap.get(clip.id)
+        if (oldTrackInfo && oldTrackInfo.trackOrder !== track.order) {
+          // 轨道顺序变化，更新 zIndex
+          const newZIndex = extClip.zIndex !== undefined
+            ? extClip.zIndex
+            : calculateZIndexFromTrackOrder(track.order)
+          currentSprite.zIndex = newZIndex
+          clipTrackMap.set(clip.id, { trackId: track.id, trackOrder: track.order })
+          console.log(`[Sprite] Updated zIndex for clip ${clip.id}: ${newZIndex} (track order changed: ${oldTrackInfo.trackOrder} -> ${track.order})`)
+        } else if (extClip.zIndex !== undefined) {
           currentSprite.zIndex = extClip.zIndex
         }
 
@@ -682,8 +1088,8 @@ async function syncClipsToCanvas() {
         }, 0)
       }
     } else {
-      // 创建新的 sprite
-      const sprite = await createSpriteFromClip(clip)
+      // 创建新的 sprite（传递 track 参数）
+      const sprite = await createSpriteFromClip(clip, track)
       if (sprite) {
         await avCanvas.addSprite(sprite)
         clipSpriteMap.set(clip.id, sprite)
@@ -893,6 +1299,7 @@ onUnmounted(() => {
   spriteListenerMap.clear()
   clipSpriteMap.clear()
   clipSnapshotMap.clear()
+  clipTrackMap.clear()
 
   if (avCanvas) {
     avCanvas.destroy()

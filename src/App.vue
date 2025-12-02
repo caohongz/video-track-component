@@ -578,13 +578,25 @@ async function handleDropMedia(mediaData: any, trackId: string, startTime: numbe
         endTime: normalizeTime(startTime + duration),
         sourceUrl: mediaData.id
       }
-    } else if (mediaData.type === 'filter' || mediaData.type === 'effect') {
+    } else if (mediaData.type === 'filter') {
+      // 滤镜使用 filterType 和 filterValue
       clip = {
         ...clip,
-        type: mediaData.type,
+        type: 'filter',
         name: mediaData.name,
         endTime: normalizeTime(startTime + duration),
-        effectType: mediaData.id
+        filterType: mediaData.filterType || mediaData.id,
+        filterValue: mediaData.filterValue ?? 1
+      }
+    } else if (mediaData.type === 'effect') {
+      // 特效使用 effectType 和 effectDuration
+      clip = {
+        ...clip,
+        type: 'effect',
+        name: mediaData.name,
+        endTime: normalizeTime(startTime + duration),
+        effectType: mediaData.effectType || mediaData.id,
+        effectDuration: duration
       }
     }
 

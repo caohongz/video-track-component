@@ -83,7 +83,7 @@
               <label class="property-label">速度</label>
               <div class="property-input-group">
                 <input v-model.number="videoSpeed" type="number" min="0.1" max="10" step="0.1"
-                  class="property-input property-input--small" @change="handleUpdateClip('speed', videoSpeed)" />
+                  class="property-input property-input--small" @change="handleUpdatePlaybackRate(videoSpeed)" />
                 <span class="property-unit">x</span>
               </div>
             </div>
@@ -236,7 +236,8 @@ watch(selectedClip, (clip) => {
     // 使用 Math.round 取整，避免显示小数
     videoOpacity.value = Math.round(((clip as any).opacity ?? 1) * 100)
     videoVolume.value = Math.round(((clip as any).volume ?? 1) * 100)
-    videoSpeed.value = (clip as any).speed ?? 1
+    // 读取 playbackRate 属性，默认为 1
+    videoSpeed.value = (clip as any).playbackRate ?? 1
   }
 
   if (clip.type === 'audio') {
@@ -288,6 +289,31 @@ function handleUpdateClip(key: string, value: any) {
 
   tracksStore.updateClip(selectedClip.value.id, { [key]: value })
   historyStore.pushSnapshot(`更新 Clip ${key}`)
+}
+
+// 处理播放倍速更新
+function handleUpdatePlaybackRate(newRate: number) {
+  if (!selectedClip.value) return
+
+  // 验证倍速范围
+  if (newRate < 0.1 || newRate > 10) {
+    console.warn('播放倍速必须在 0.1 到 10 之间')
+    return
+  }
+
+  // 使用 setClipPlaybackRate 方法更新倍速
+  const result = tracksStore.setClipPlaybackRate(selectedClip.value.id, newRate, {
+    allowShrink: true,
+    allowExpand: true,
+    handleCollision: true,
+    keepStartTime: true
+  })
+
+  if (result.success) {
+    historyStore.pushSnapshot(`更新播放倍速为 ${newRate}x`)
+  } else {
+    console.warn('更新播放倍速失败:', result.message)
+  }
 }
 
 function handleUpdateTransitionDuration() {
