@@ -106,9 +106,9 @@
           <MediaLibrary />
         </div>
 
-        <!-- 调试面板 -->
+        <!-- 视频预览/调试面板 -->
         <div class="workspace__panel workspace__panel--center">
-          <DebugPanel />
+          <VideoPreview />
         </div>
 
         <!-- 属性面板 -->
@@ -188,7 +188,7 @@ import {
 } from 'vue-clip-track'
 import MediaLibrary from './components/MediaLibrary/index.vue'
 import PropertyPanel from './components/PropertyPanel/index.vue'
-import DebugPanel from './components/DebugPanel/index.vue'
+import VideoPreview from './components/VideoPreview/index.vue'
 import { useTheme } from './composables/useTheme'
 import { createMockTracks } from './utils/mockData'
 

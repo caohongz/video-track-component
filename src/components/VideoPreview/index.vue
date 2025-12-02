@@ -1,25 +1,33 @@
 <template>
   <div class="video-preview">
     <div class="video-preview__header">
-      <h3 class="video-preview__title">预览</h3>
-      <div class="video-preview__info">
-        <span class="info-item">{{ formatTime(playbackStore.currentTime) }}</span>
+      <div class="video-preview__tabs">
+        <button :class="['tab-btn', { 'tab-btn--active': activeTab === 'player' }]" @click="activeTab = 'player'">
+          🎬 播放器
+        </button>
+        <button :class="['tab-btn', { 'tab-btn--active': activeTab === 'debug' }]" @click="activeTab = 'debug'">
+          🔧 调试面板
+        </button>
+      </div>
+      <div v-if="activeTab === 'player'" class="video-preview__info">
+        <span class="info-item">{{ formatTime(currentTimeInSeconds) }}</span>
         <span class="info-separator">/</span>
-        <span class="info-item">{{ formatTime(playbackStore.duration) }}</span>
+        <span class="info-item">{{ formatTime(durationInSeconds) }}</span>
       </div>
     </div>
 
-    <div class="video-preview__content">
-      <!-- 模拟视频预览区域 -->
-      <div class="preview-screen">
-        <div class="preview-screen__placeholder">
+    <!-- 播放器内容 -->
+    <div v-show="activeTab === 'player'" class="video-preview__content">
+      <!-- AVCanvas 视频预览区域 -->
+      <div ref="canvasContainer" class="preview-screen">
+        <div v-if="!hasSprites" class="preview-screen__placeholder">
           <div class="placeholder-icon">🎬</div>
           <div class="placeholder-text">视频预览区域</div>
-          <div class="placeholder-time">{{ formatTime(playbackStore.currentTime) }}</div>
+          <div class="placeholder-time">{{ formatTime(currentTimeInSeconds) }}</div>
         </div>
 
         <!-- 播放指示器 -->
-        <div v-if="playbackStore.isPlaying" class="preview-screen__playing">
+        <div v-if="isPlaying && !hasSprites" class="preview-screen__playing">
           <div class="playing-indicator">▶</div>
         </div>
       </div>
@@ -27,12 +35,8 @@
       <!-- 播放控制 -->
       <div class="preview-controls">
         <div class="controls-group">
-          <button
-            class="control-btn control-btn--primary"
-            :title="playbackStore.isPlaying ? '暂停' : '播放'"
-            @click="togglePlayback"
-          >
-            {{ playbackStore.isPlaying ? '⏸' : '▶' }}
+          <button class="control-btn control-btn--primary" :title="isPlaying ? '暂停' : '播放'" @click="togglePlayback">
+            {{ isPlaying ? '⏸' : '▶' }}
           </button>
           <button class="control-btn" title="停止" @click="handleStop">
             ⏹
@@ -69,26 +73,87 @@
 
       <!-- 播放进度条 -->
       <div class="preview-progress">
-        <input
-          type="range"
-          min="0"
-          :max="playbackStore.duration"
-          :value="playbackStore.currentTime"
-          step="0.01"
-          class="progress-slider"
-          @input="handleSeek"
-        />
+        <input type="range" min="0" :max="durationInSeconds" :value="currentTimeInSeconds" step="0.01"
+          class="progress-slider" @input="handleSeek" />
       </div>
+    </div>
+
+    <!-- 调试面板内容 -->
+    <div v-show="activeTab === 'debug'" class="video-preview__debug">
+      <DebugPanel />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { usePlaybackStore } from '../../stores/playback'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { AVCanvas } from '@webav/av-canvas'
+import { usePlaybackStore } from 'vue-clip-track'
+import DebugPanel from '../DebugPanel/index.vue'
 
 const playbackStore = usePlaybackStore()
 const playbackSpeed = ref(1)
+const activeTab = ref<'player' | 'debug'>('player')
+
+// AVCanvas 相关
+const canvasContainer = ref<HTMLElement | null>(null)
+let avCanvas: AVCanvas | null = null
+const hasSprites = ref(false)
+const isPlaying = ref(false)
+const currentTime = ref(0) // 微秒
+const duration = ref(playbackStore.duration * 1e6) // 转换为微秒
+
+// 计算属性：将微秒转换为秒
+const currentTimeInSeconds = computed(() => currentTime.value / 1e6)
+const durationInSeconds = computed(() => duration.value / 1e6)
+
+// 初始化 AVCanvas
+onMounted(async () => {
+  if (canvasContainer.value) {
+    try {
+      avCanvas = new AVCanvas(canvasContainer.value, {
+        bgColor: '#1a1a2e',
+        width: 1280,
+        height: 720,
+      })
+
+      // 监听时间更新事件
+      avCanvas.on('timeupdate', (time: number) => {
+        currentTime.value = time
+        // 同步到 playbackStore
+        playbackStore.seekTo(time / 1e6)
+      })
+
+      // 监听播放状态事件
+      avCanvas.on('playing', () => {
+        isPlaying.value = true
+        playbackStore.play()
+      })
+
+      avCanvas.on('paused', () => {
+        isPlaying.value = false
+        playbackStore.pause()
+      })
+
+      console.log('AVCanvas initialized successfully')
+    } catch (error) {
+      console.error('Failed to initialize AVCanvas:', error)
+    }
+  }
+})
+
+// 监听 playbackStore 的变化
+watch(() => playbackStore.duration, (newDuration) => {
+  duration.value = newDuration * 1e6
+})
+
+// 清理 AVCanvas
+onUnmounted(() => {
+  if (avCanvas) {
+    avCanvas.destroy()
+    avCanvas = null
+  }
+})
 
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60)
@@ -98,42 +163,102 @@ function formatTime(seconds: number): string {
 }
 
 function togglePlayback() {
-  if (playbackStore.isPlaying) {
-    playbackStore.pause()
+  if (!avCanvas) {
+    // 如果没有 AVCanvas，使用 playbackStore 模拟
+    if (playbackStore.isPlaying) {
+      playbackStore.pause()
+      isPlaying.value = false
+    } else {
+      playbackStore.play()
+      isPlaying.value = true
+    }
+    return
+  }
+
+  if (isPlaying.value) {
+    avCanvas.pause()
   } else {
-    playbackStore.play()
+    avCanvas.play({ start: currentTime.value, playbackRate: playbackSpeed.value })
   }
 }
 
 function handleStop() {
+  if (avCanvas) {
+    avCanvas.pause()
+    avCanvas.previewFrame(0)
+  }
+  currentTime.value = 0
+  isPlaying.value = false
   playbackStore.pause()
   playbackStore.seekTo(0)
 }
 
 function handleRewind() {
+  if (avCanvas) {
+    avCanvas.previewFrame(0)
+  }
+  currentTime.value = 0
   playbackStore.seekTo(0)
 }
 
 function handlePreviousFrame() {
-  const frameTime = 1 / 30 // 假设 30fps
-  const newTime = Math.max(0, playbackStore.currentTime - frameTime)
-  playbackStore.seekTo(newTime)
+  const frameTime = 1 / 30 * 1e6 // 假设 30fps，转换为微秒
+  const newTime = Math.max(0, currentTime.value - frameTime)
+  if (avCanvas) {
+    avCanvas.previewFrame(newTime)
+  }
+  currentTime.value = newTime
+  playbackStore.seekTo(newTime / 1e6)
 }
 
 function handleNextFrame() {
-  const frameTime = 1 / 30 // 假设 30fps
-  const newTime = Math.min(playbackStore.duration, playbackStore.currentTime + frameTime)
-  playbackStore.seekTo(newTime)
+  const frameTime = 1 / 30 * 1e6 // 假设 30fps，转换为微秒
+  const newTime = Math.min(duration.value, currentTime.value + frameTime)
+  if (avCanvas) {
+    avCanvas.previewFrame(newTime)
+  }
+  currentTime.value = newTime
+  playbackStore.seekTo(newTime / 1e6)
 }
 
 function handleSeek(event: Event) {
   const target = event.target as HTMLInputElement
-  playbackStore.seekTo(parseFloat(target.value))
+  const timeInSeconds = parseFloat(target.value)
+  const timeInMicroseconds = timeInSeconds * 1e6
+
+  if (avCanvas) {
+    avCanvas.previewFrame(timeInMicroseconds)
+  }
+  currentTime.value = timeInMicroseconds
+  playbackStore.seekTo(timeInSeconds)
 }
 
 function handleSpeedChange() {
   playbackStore.setPlaybackRate(playbackSpeed.value)
+  // 如果正在播放，更新播放速度
+  if (avCanvas && isPlaying.value) {
+    avCanvas.pause()
+    avCanvas.play({ start: currentTime.value, playbackRate: playbackSpeed.value })
+  }
 }
+
+// 暴露 AVCanvas 实例供外部使用
+defineExpose({
+  avCanvas: computed(() => avCanvas),
+  addSprite: async (sprite: any) => {
+    if (avCanvas) {
+      await avCanvas.addSprite(sprite)
+      hasSprites.value = true
+    }
+  },
+  removeSprite: (sprite: any) => {
+    if (avCanvas) {
+      avCanvas.removeSprite(sprite)
+      // 检查是否还有 sprites
+      // hasSprites.value = avCanvas.sprites.length > 0
+    }
+  }
+})
 </script>
 
 <style scoped>
@@ -153,6 +278,41 @@ function handleSpeedChange() {
   padding: 10px 12px;
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
+}
+
+.video-preview__tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab-btn {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.tab-btn:hover {
+  background: var(--color-bg-light);
+  color: var(--color-text-primary);
+  border-color: var(--color-primary);
+}
+
+.tab-btn--active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+
+.tab-btn--active:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+  color: white;
 }
 
 .video-preview__title {
@@ -184,6 +344,11 @@ function handleSpeedChange() {
   overflow: hidden;
 }
 
+.video-preview__debug {
+  flex: 1;
+  overflow: auto;
+}
+
 /* 预览屏幕 */
 .preview-screen {
   flex: 1;
@@ -195,6 +360,14 @@ function handleSpeedChange() {
   display: flex;
   align-items: center;
   justify-content: center;
+  min-height: 200px;
+}
+
+/* AVCanvas 样式覆盖 */
+.preview-screen :deep(canvas) {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
 }
 
 .preview-screen__placeholder {
@@ -203,6 +376,8 @@ function handleSpeedChange() {
   align-items: center;
   gap: 12px;
   opacity: 0.4;
+  position: absolute;
+  z-index: 1;
 }
 
 .placeholder-icon {
@@ -227,6 +402,7 @@ function handleSpeedChange() {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
+  z-index: 2;
 }
 
 .playing-indicator {
@@ -236,10 +412,13 @@ function handleSpeedChange() {
 }
 
 @keyframes pulse {
-  0%, 100% {
+
+  0%,
+  100% {
     opacity: 0.6;
     transform: scale(1);
   }
+
   50% {
     opacity: 1;
     transform: scale(1.1);
@@ -383,4 +562,3 @@ function handleSpeedChange() {
   box-shadow: 0 3px 6px rgba(0, 0, 0, 0.3);
 }
 </style>
-

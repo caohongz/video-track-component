@@ -11,11 +11,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "vue-clip-track": "^0.1.1",
+    "@webav/av-canvas": "^1.2.7",
     "@webav/av-cliper": "^1.2.7",
     "element-plus": "^2.11.8",
     "pinia": "^2.1.7",
-    "vue": "^3.4.21"
+    "vue": "^3.4.21",
+    "vue-clip-track": "^0.1.1"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.4",
