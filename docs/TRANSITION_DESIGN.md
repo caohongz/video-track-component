@@ -100,6 +100,53 @@ interface TransitionClip extends BaseClip {
 3. 删除前后 Clip 时，应同时删除关联的转场
 4. 移动 Clip 时，关联的转场应随之调整位置
 
+## 渲染层实现
+
+### 渲染策略
+
+转场效果在 `VideoPreview` 组件中通过 `tickInterceptor` 机制实现：
+
+```
+时间轴示意（两个 clip 相接）：
+Video 1:     ████████████████▓▓▓▓  （4.5s-5s 淡出）
+                              ↘
+                               转场混合
+                              ↗
+Video 2:                   ▓▓▓▓████████████████  （5s-5.5s 渐入）
+             0s           4.5s  5s  5.5s        11s
+                          ↑─────────↑
+                           转场时间段
+```
+
+### 工作流程
+
+1. **beforeClip（转场前的视频）**：
+   - 在 `transition.startTime` 到 `beforeClip.endTime` 期间
+   - 正常渲染并缓存帧（供 afterClip 混合使用）
+   - 应用淡出效果（透明度随 progress 降低）
+
+2. **afterClip（转场后的视频）**：
+   - 在 `afterClip.startTime` 到 `transition.endTime` 期间
+   - 读取 beforeClip 的缓存帧
+   - 调用转场渲染器进行帧混合
+
+### 支持的转场类型
+
+| 类别 | 效果 |
+|------|------|
+| 淡入淡出 | `fade`, `dissolve` |
+| 滑动 | `slide-left`, `slide-right`, `slide-up`, `slide-down` |
+| 擦除 | `wipe-left`, `wipe-right`, `wipe-up`, `wipe-down` |
+| 缩放 | `zoom-in`, `zoom-out` |
+| 形状遮罩 | `circle`, `diamond`, `clock` |
+| 其他 | `rotate`, `blur` |
+
+### 关键代码位置
+
+- 转场渲染器：`src/utils/transitionRenderers.ts`
+- 转场检测逻辑：`VideoPreview/index.vue` 中的 `detectTransitions()`
+- 帧混合逻辑：`VideoPreview/index.vue` 中的 `createFilteredTickInterceptor()`
+
 
 
 

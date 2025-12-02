@@ -198,7 +198,7 @@
             <div class="selected-clip__header">
               <span>{{ getClipIcon(clip.type) }} {{ clip.name || clip.id }}</span>
             </div>
-            <pre class="json-content">{{ JSON.stringify(clip, null, 2) }}</pre>
+            <pre class="json-content">{{ JSON.stringify(filterUselessData(clip), null, 2) }}</pre>
           </div>
         </div>
         <div v-else class="empty-state">
@@ -295,7 +295,7 @@
         <div class="debug-json">
           <div class="json-block">
             <div class="json-block__title">所有轨道数据</div>
-            <pre class="json-content">{{ JSON.stringify(tracksStore.tracks, null, 2) }}</pre>
+            <pre class="json-content">{{ JSON.stringify(filteredTracks, null, 2) }}</pre>
           </div>
         </div>
       </div>
@@ -368,6 +368,28 @@ function formatTimestamp(timestamp: number): string {
   const date = new Date(timestamp)
   return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}:${date.getSeconds().toString().padStart(2, '0')}`
 }
+
+// 过滤掉 thumbnails 和 waveformData 等无用数据
+function filterUselessData(data: any): any {
+  if (Array.isArray(data)) {
+    return data.map(item => filterUselessData(item))
+  }
+  if (data && typeof data === 'object') {
+    const filtered: Record<string, any> = {}
+    for (const key of Object.keys(data)) {
+      // 跳过这些大数据字段
+      if (key === 'thumbnails' || key === 'waveformData') {
+        continue
+      }
+      filtered[key] = filterUselessData(data[key])
+    }
+    return filtered
+  }
+  return data
+}
+
+// 获取过滤后的轨道数据
+const filteredTracks = computed(() => filterUselessData(tracksStore.tracks))
 
 // 播放进度百分比
 function getPlaybackProgress(): string {

@@ -51,8 +51,9 @@ import { ref, onMounted, onUnmounted, computed, watch, provide, reactive } from 
 import { AVCanvas } from '@webav/av-canvas'
 import { MP4Clip, AudioClip, ImgClip, VisibleSprite, renderTxt2ImgBitmap } from '@webav/av-cliper'
 import { usePlaybackStore, useTracksStore } from 'vue-clip-track'
-import type { Clip, MediaClip, SubtitleClip, TextClip, FilterClip, EffectClip, Track } from 'vue-clip-track'
+import type { Clip, MediaClip, SubtitleClip, TextClip, FilterClip, EffectClip, TransitionClip, Track } from 'vue-clip-track'
 import DebugPanel from '../DebugPanel/index.vue'
+import { getTransitionRenderer, type TransitionRenderer } from '@/utils/transitionRenderers'
 
 // 滤镜类型定义
 interface FilterConfig {
@@ -82,6 +83,17 @@ interface ActiveEffect {
   trackId: string
   effectType: string
   progress: number  // 特效进度 0-1
+}
+
+// 转场信息（用于关联两个视频 clip）
+interface TransitionInfo {
+  transitionClip: TransitionClip
+  beforeClipId: string      // 转场前的视频 clip ID
+  afterClipId: string       // 转场后的视频 clip ID
+  transitionType: string    // 转场类型
+  startTime: number         // 转场开始时间（秒）
+  endTime: number           // 转场结束时间（秒）
+  duration: number          // 转场时长（秒）
 }
 
 // 定义事件
@@ -173,6 +185,17 @@ const clipSnapshotMap = new Map<string, {
 // 存储 clip 所属轨道的信息（用于计算 zIndex）
 const clipTrackMap = new Map<string, { trackId: string; trackOrder: number }>()
 
+// 存储转场信息（transitionClipId -> TransitionInfo）
+const transitionInfoMap = new Map<string, TransitionInfo>()
+// 存储 clip 关联的转场信息（videoClipId -> TransitionInfo[]）
+// 一个视频 clip 可能同时是某个转场的 beforeClip 和另一个转场的 afterClip
+const clipTransitionsMap = new Map<string, TransitionInfo[]>()
+// 缓存转场渲染需要的帧数据
+const transitionFrameCache = new Map<string, {
+  canvas: OffscreenCanvas
+  ctx: OffscreenCanvasRenderingContext2D
+}>()
+
 // 当前激活的滤镜列表
 const activeFilters = ref<ActiveFilter[]>([])
 // 当前激活的特效列表
@@ -258,9 +281,18 @@ function findClipById(clipId: string): Clip | null {
 
 // ============ 轨道 zIndex 计算 ============
 // 根据轨道顺序计算 zIndex，轨道 order 越小（越靠上），zIndex 越大（显示在上层）
-function calculateZIndexFromTrackOrder(trackOrder: number): number {
+// 字幕轨道始终显示在所有画面之上
+function calculateZIndexFromTrackOrder(trackOrder: number, isSubtitleTrack: boolean = false): number {
   const maxTracks = 100 // 假设最多 100 个轨道
-  return (maxTracks - trackOrder) * 10 // 每个轨道之间留 10 的间隔
+  const baseZIndex = (maxTracks - trackOrder) * 10 // 每个轨道之间留 10 的间隔
+
+  // 字幕轨道额外增加 1000 的基础值，确保始终在画面之上
+  // 字幕轨道之间仍然按照轨道关系确定层级
+  if (isSubtitleTrack) {
+    return baseZIndex + 1000
+  }
+
+  return baseZIndex
 }
 
 // 获取 clip 所属轨道的 order
@@ -490,7 +522,180 @@ function applyEffectsToFrame(
   return { opacity: Math.max(0, Math.min(1, opacity)), transform }
 }
 
-// 创建带滤镜的 tickInterceptor
+// ============ 转场处理 ============
+
+// 检测并建立转场关联关系
+function detectTransitions(): void {
+  // 清除旧的转场信息
+  transitionInfoMap.clear()
+  clipTransitionsMap.clear()
+
+  for (const track of tracksStore.tracks) {
+    if (track.visible === false) continue
+
+    // 找出该轨道中的所有转场 clip
+    const transitionClips = track.clips.filter(c => c.type === 'transition') as TransitionClip[]
+    // 找出该轨道中的所有视频 clip
+    const videoClips = track.clips.filter(c => c.type === 'video') as MediaClip[]
+
+    for (const transitionClip of transitionClips) {
+      // 转场时间范围
+      const transStart = transitionClip.startTime
+      const transEnd = transitionClip.endTime
+      const transMidPoint = (transStart + transEnd) / 2
+
+      // 查找转场前的视频 clip（beforeClip）
+      // 策略：找到 endTime 在转场时间范围内或刚好在转场中点之后的视频
+      // 典型情况：Video1 结束于 5s，转场从 4.5s-5.5s，中点 5s
+      let beforeClip: MediaClip | null = null
+      let beforeClipScore = -Infinity
+      for (const vc of videoClips) {
+        // 条件：视频的结束时间落在 [transStart, transEnd] 区间内或附近
+        // 允许 1s 的容差来处理边界情况
+        const tolerance = 1.0
+        if (vc.endTime >= transStart - tolerance && vc.endTime <= transEnd + tolerance) {
+          // 评分：结束时间越接近转场中点越好
+          const score = -Math.abs(vc.endTime - transMidPoint)
+          if (score > beforeClipScore) {
+            beforeClip = vc
+            beforeClipScore = score
+          }
+        }
+      }
+
+      // 查找转场后的视频 clip（afterClip）
+      // 策略：找到 startTime 在转场时间范围内或刚好在转场中点之前的视频
+      // 典型情况：Video2 开始于 5s，转场从 4.5s-5.5s，中点 5s
+      let afterClip: MediaClip | null = null
+      let afterClipScore = -Infinity
+      for (const vc of videoClips) {
+        // 条件：视频的开始时间落在 [transStart, transEnd] 区间内或附近
+        const tolerance = 1.0
+        if (vc.startTime >= transStart - tolerance && vc.startTime <= transEnd + tolerance) {
+          // 评分：开始时间越接近转场中点越好
+          const score = -Math.abs(vc.startTime - transMidPoint)
+          if (score > afterClipScore) {
+            afterClip = vc
+            afterClipScore = score
+          }
+        }
+      }
+
+      // 如果找到了前后两个视频 clip，建立转场关联
+      if (beforeClip && afterClip && beforeClip.id !== afterClip.id) {
+        const transitionInfo: TransitionInfo = {
+          transitionClip,
+          beforeClipId: beforeClip.id,
+          afterClipId: afterClip.id,
+          transitionType: transitionClip.transitionType || 'fade',
+          startTime: transStart,
+          endTime: transEnd,
+          duration: transEnd - transStart
+        }
+
+        transitionInfoMap.set(transitionClip.id, transitionInfo)
+
+        // 为两个视频 clip 添加转场关联
+        const beforeTransitions = clipTransitionsMap.get(beforeClip.id) || []
+        beforeTransitions.push(transitionInfo)
+        clipTransitionsMap.set(beforeClip.id, beforeTransitions)
+
+        const afterTransitions = clipTransitionsMap.get(afterClip.id) || []
+        afterTransitions.push(transitionInfo)
+        clipTransitionsMap.set(afterClip.id, afterTransitions)
+
+        console.log(`[Transition] Detected: ${transitionClip.transitionType} between ${beforeClip.id}(ends@${beforeClip.endTime}s) and ${afterClip.id}(starts@${afterClip.startTime}s), transition: ${transStart}s - ${transEnd}s`)
+      } else {
+        console.warn(`[Transition] Could not find valid video clips for transition ${transitionClip.id}`, {
+          beforeClip: beforeClip?.id,
+          afterClip: afterClip?.id
+        })
+      }
+    }
+  }
+}
+
+// 获取当前时间点的激活转场信息
+// 转场渲染策略：
+// - 在 beforeClip 播放期间（transition.startTime 到 beforeClip.endTime）：beforeClip 渐隐
+// - 在 afterClip 播放期间（afterClip.startTime 到 transition.endTime）：afterClip 渐显并混合 beforeClip 的缓存帧
+function getActiveTransitionAtTime(timeInSeconds: number, clipId: string): {
+  transition: TransitionInfo
+  progress: number
+  isBeforeClip: boolean
+} | null {
+  const transitions = clipTransitionsMap.get(clipId)
+  if (!transitions || transitions.length === 0) return null
+
+  for (const transition of transitions) {
+    const isBeforeClip = transition.beforeClipId === clipId
+
+    // 查找关联的 clip 信息
+    const beforeClip = findClipById(transition.beforeClipId)
+    const afterClip = findClipById(transition.afterClipId)
+
+    if (!beforeClip || !afterClip) continue
+
+    if (isBeforeClip) {
+      // 对于 beforeClip：在 transition.startTime 到 beforeClip.endTime 期间生效
+      // progress: 0 (刚开始转场) -> 1 (beforeClip 结束)
+      if (timeInSeconds >= transition.startTime && timeInSeconds <= beforeClip.endTime) {
+        const effectiveDuration = beforeClip.endTime - transition.startTime
+        const progress = effectiveDuration > 0
+          ? (timeInSeconds - transition.startTime) / effectiveDuration
+          : 0
+        return { transition, progress: Math.min(1, progress), isBeforeClip: true }
+      }
+    } else {
+      // 对于 afterClip：在 afterClip.startTime 到 transition.endTime 期间生效
+      // progress: 0 (afterClip 刚开始) -> 1 (转场结束)
+      if (timeInSeconds >= afterClip.startTime && timeInSeconds <= transition.endTime) {
+        const effectiveDuration = transition.endTime - afterClip.startTime
+        const progress = effectiveDuration > 0
+          ? (timeInSeconds - afterClip.startTime) / effectiveDuration
+          : 0
+        return { transition, progress: Math.min(1, progress), isBeforeClip: false }
+      }
+    }
+  }
+
+  return null
+}
+
+// 获取另一个 clip 的当前帧（用于转场混合）
+async function getOtherClipFrame(
+  clipId: string,
+  globalTimeInSeconds: number
+): Promise<ImageBitmap | null> {
+  const sprite = clipSpriteMap.get(clipId)
+  if (!sprite) {
+    console.warn(`[Transition] Cannot find sprite for clip ${clipId}`)
+    return null
+  }
+
+  try {
+    // 计算该 clip 内部的时间偏移
+    const clip = findClipById(clipId)
+    if (!clip) return null
+
+    // 内部时间 = 全局时间 - clip 开始时间
+    const internalTimeInSeconds = globalTimeInSeconds - clip.startTime
+    if (internalTimeInSeconds < 0) return null
+
+    // 由于 @webav/av-cliper 的 sprite 没有直接提供获取帧的方法
+    // 我们需要使用缓存的方式：在 tickInterceptor 中缓存最近的帧
+    // 这里暂时返回 null，实际帧数据会在渲染时直接获取
+    return null
+  } catch (error) {
+    console.warn(`[Transition] Failed to get frame for clip ${clipId}:`, error)
+    return null
+  }
+}
+
+// 帧缓存：用于存储每个 clip 最近渲染的帧（用于转场混合）
+const clipFrameCache = new Map<string, ImageBitmap>()
+
+// 创建带滤镜和转场的 tickInterceptor
 // 注意：time 参数是 clip 内部的相对时间（微秒），需要转换为全局时间轴时间
 function createFilteredTickInterceptor(
   originalClip: Clip
@@ -510,6 +715,10 @@ function createFilteredTickInterceptor(
   let cachedWidth = 0
   let cachedHeight = 0
 
+  // 转场专用的 canvas（用于混合两帧）
+  let transitionCanvas: OffscreenCanvas | null = null
+  let transitionCtx: OffscreenCanvasRenderingContext2D | null = null
+
   return async (time: number, tickRet: any) => {
     if (!tickRet.video) return tickRet
 
@@ -522,12 +731,149 @@ function createFilteredTickInterceptor(
     const elapsedTimeOnTimeline = (time / 1e6) / playbackRate
     const globalTimeInSeconds = originalClip.startTime + elapsedTimeOnTimeline
 
+    const frame = tickRet.video as VideoFrame | ImageBitmap
+    const width = 'displayWidth' in frame ? frame.displayWidth : frame.width
+    const height = 'displayHeight' in frame ? frame.displayHeight : frame.height
+
+    // 检查当前是否处于转场时间段
+    const transitionState = getActiveTransitionAtTime(globalTimeInSeconds, originalClip.id)
+
     // 获取当前激活的滤镜和特效
     const filters = getActiveFiltersAtTime(globalTimeInSeconds)
     const effects = getActiveEffectsAtTime(globalTimeInSeconds)
 
-    // 如果没有滤镜和特效，直接返回
+    // 辅助函数：更新帧缓存（用于转场混合）
+    const updateFrameCache = async (frameToCache: VideoFrame | ImageBitmap) => {
+      try {
+        const frameCopy = await createImageBitmap(frameToCache)
+        const oldCache = clipFrameCache.get(originalClip.id)
+        if (oldCache) {
+          oldCache.close()
+        }
+        clipFrameCache.set(originalClip.id, frameCopy)
+      } catch (e) {
+        // 忽略缓存错误
+      }
+    }
+
+    // 如果处于转场中且当前 clip 是转场后的视频（afterClip），进行混合渲染
+    if (transitionState && !transitionState.isBeforeClip) {
+      const { transition, progress } = transitionState
+      const beforeClipFrame = clipFrameCache.get(transition.beforeClipId)
+
+      if (beforeClipFrame) {
+        try {
+          // 创建或复用转场 canvas
+          if (!transitionCanvas || transitionCanvas.width !== width || transitionCanvas.height !== height) {
+            transitionCanvas = new OffscreenCanvas(width, height)
+            transitionCtx = transitionCanvas.getContext('2d')
+          }
+
+          if (transitionCtx) {
+            // 获取转场渲染器
+            const renderer = getTransitionRenderer(transition.transitionType)
+
+            // 渲染转场效果
+            renderer.render(
+              transitionCtx,
+              beforeClipFrame,  // 前一个 clip 的帧
+              frame,            // 当前 clip 的帧（后一个）
+              progress,
+              width,
+              height
+            )
+
+            // 如果原始帧是 VideoFrame，需要关闭它以释放内存
+            if ('close' in frame && typeof frame.close === 'function') {
+              frame.close()
+            }
+
+            // 创建混合后的帧
+            const transitionedFrame = await createImageBitmap(transitionCanvas)
+
+            console.log(`[Transition] Rendered ${transition.transitionType} at progress ${progress.toFixed(2)}`)
+
+            return {
+              ...tickRet,
+              video: transitionedFrame
+            }
+          }
+        } catch (error) {
+          console.warn('[Transition] Failed to render transition:', error)
+          // 失败时继续正常渲染
+        }
+      }
+    }
+
+    // 如果处于转场中且当前 clip 是转场前的视频（beforeClip）
+    // beforeClip 需要应用滤镜后缓存帧（供 afterClip 混合使用）
+    // 同时应用淡出效果，让视觉上逐渐消失
+    if (transitionState && transitionState.isBeforeClip) {
+      const { progress } = transitionState
+
+      // 复用或创建 canvas
+      if (!cachedCanvas || cachedWidth !== width || cachedHeight !== height) {
+        cachedCanvas = new OffscreenCanvas(width, height)
+        cachedCtx = cachedCanvas.getContext('2d')
+        cachedWidth = width
+        cachedHeight = height
+      }
+
+      if (cachedCtx) {
+        cachedCtx.clearRect(0, 0, width, height)
+        cachedCtx.setTransform(1, 0, 0, 1, 0, 0)
+        cachedCtx.filter = 'none'
+        cachedCtx.globalAlpha = 1
+
+        // 应用 CSS 滤镜（如果有）
+        if (filters.length > 0) {
+          cachedCtx.filter = buildCSSFilter(filters)
+        }
+
+        // 应用特效（透明度部分）
+        let effectOpacity = 1
+        if (effects.length > 0) {
+          const effectResult = applyEffectsToFrame(effects, frame, time)
+          effectOpacity = effectResult.opacity
+        }
+
+        // 先以完整透明度绘制帧（用于缓存）
+        cachedCtx.globalAlpha = effectOpacity
+        cachedCtx.drawImage(frame, 0, 0)
+
+        // 缓存应用滤镜后的帧（不含淡出效果，供转场混合使用）
+        const frameForCache = await createImageBitmap(cachedCanvas)
+        await updateFrameCache(frameForCache)
+
+        // 如果需要淡出效果，重新绘制
+        if (progress > 0) {
+          cachedCtx.clearRect(0, 0, width, height)
+          cachedCtx.filter = filters.length > 0 ? buildCSSFilter(filters) : 'none'
+          // 应用淡出效果：随着 progress 增加，透明度降低
+          cachedCtx.globalAlpha = effectOpacity * (1 - progress)
+          cachedCtx.drawImage(frame, 0, 0)
+        }
+
+        cachedCtx.globalAlpha = 1
+        cachedCtx.filter = 'none'
+
+        // 如果原始帧是 VideoFrame，需要关闭它以释放内存
+        if ('close' in frame && typeof frame.close === 'function') {
+          frame.close()
+        }
+
+        const fadedFrame = await createImageBitmap(cachedCanvas)
+        return {
+          ...tickRet,
+          video: fadedFrame
+        }
+      }
+    }
+
+    // 如果没有滤镜、特效和转场，缓存原始帧并直接返回
     if (filters.length === 0 && effects.length === 0) {
+      // 缓存原始帧
+      await updateFrameCache(frame)
       return tickRet
     }
 
@@ -574,6 +920,9 @@ function createFilteredTickInterceptor(
 
       // 创建新的 ImageBitmap
       const newFrame = await createImageBitmap(cachedCanvas)
+
+      // 缓存应用滤镜后的帧（用于转场混合）
+      await updateFrameCache(newFrame)
 
       return {
         ...tickRet,
@@ -955,11 +1304,14 @@ async function createSpriteFromClip(clip: Clip, track: Track): Promise<VisibleSp
 
     // 设置 zIndex：优先使用 clip 自身的 zIndex，否则根据轨道顺序计算
     // 轨道 order 越小（越靠上），zIndex 越大（显示在上层）
+    // 字幕轨道（subtitle/text）始终显示在所有画面之上
+    const isSubtitleTrack = track.type === 'subtitle' || track.type === 'text'
     if (extClip.zIndex !== undefined) {
-      sprite.zIndex = extClip.zIndex
+      // 如果是字幕且有自定义 zIndex，也要加上字幕基础值
+      sprite.zIndex = isSubtitleTrack ? extClip.zIndex + 1000 : extClip.zIndex
     } else {
       // 根据轨道顺序计算 zIndex
-      sprite.zIndex = calculateZIndexFromTrackOrder(track.order)
+      sprite.zIndex = calculateZIndexFromTrackOrder(track.order, isSubtitleTrack)
     }
 
     // 记录 clip 和轨道的映射关系
@@ -984,6 +1336,9 @@ async function syncClipsToCanvas() {
     return
   }
   isSyncing = true
+
+  // 首先检测转场关联关系
+  detectTransitions()
 
   // 收集所有需要处理的 clips 及其所属轨道
   const allClipsWithTrack: { clip: Clip; track: Track }[] = []
@@ -1209,6 +1564,12 @@ onMounted(async () => {
 watch(
   () => tracksStore.tracks,
   async () => {
+    // 清除帧缓存，确保删除滤镜/特效后画面立即更新
+    for (const frame of clipFrameCache.values()) {
+      frame.close()
+    }
+    clipFrameCache.clear()
+
     await syncClipsToCanvas()
     // 同步后显示当前帧
     if (avCanvas && clipSpriteMap.size > 0 && !isPlaying.value) {
@@ -1300,6 +1661,19 @@ onUnmounted(() => {
   clipSpriteMap.clear()
   clipSnapshotMap.clear()
   clipTrackMap.clear()
+
+  // 清理转场相关数据
+  transitionInfoMap.clear()
+  clipTransitionsMap.clear()
+
+  // 清理帧缓存
+  for (const frame of clipFrameCache.values()) {
+    frame.close()
+  }
+  clipFrameCache.clear()
+
+  // 清理转场帧缓存
+  transitionFrameCache.clear()
 
   if (avCanvas) {
     avCanvas.destroy()

@@ -275,7 +275,7 @@ export function createMockMainTrackWithTransitions(): Track {
       playbackRate: 1,
       thumbnails: [],
     } as MediaClip,
-    // 转场效果
+    // 转场效果（在两个 clip 交界处）
     {
       id: generateId('clip-'),
       trackId: '',
@@ -287,7 +287,7 @@ export function createMockMainTrackWithTransitions(): Track {
       transitionDuration: 1,
       name: '淡入淡出',
     } as TransitionClip,
-    // 第二个视频 clip
+    // 第二个视频 clip（紧接第一个 clip）
     {
       id: generateId('clip-'),
       trackId: '',
@@ -314,7 +314,7 @@ export function createMockMainTrackWithTransitions(): Track {
       transitionDuration: 1,
       name: '滑动',
     } as TransitionClip,
-    // 第三个视频 clip
+    // 第三个视频 clip（紧接第二个 clip）
     {
       id: generateId('clip-'),
       trackId: '',
