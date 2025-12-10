@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@webav/av-canvas':
+        specifier: ^1.2.7
+        version: 1.2.7
       '@webav/av-cliper':
         specifier: ^1.2.7
         version: 1.2.7
@@ -22,7 +25,7 @@ importers:
         version: 3.5.25(typescript@5.9.3)
       vue-clip-track:
         specifier: ^0.1.1
-        version: 0.1.1(pinia@2.3.1(typescript@5.9.3)(vue@3.5.25(typescript@5.9.3)))(vue@3.5.25(typescript@5.9.3))
+        version: link:../../study/vue-clip-track
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^5.0.4
@@ -408,6 +411,9 @@ packages:
   '@vueuse/shared@9.13.0':
     resolution: {integrity: sha512-UrnhU+Cnufu4S6JLCPZnkWh0WwZGUp72ktOF2DFptMlOs3TOdVv8xJN53zhHGARmVOsz5KqOls09+J1NR6sBKw==}
 
+  '@webav/av-canvas@1.2.7':
+    resolution: {integrity: sha512-UFpZzjRTNCdrRmVkfQsANdRjpPOl+ejBB/lKbitHoi7f2APAq2GlJx/X4Wnwl0RGVDhUa4UgGdChpuP8RiYvqw==}
+
   '@webav/av-cliper@1.2.7':
     resolution: {integrity: sha512-zn+h5gJVyOupTraykCz1/wiowSfV1/jqt7Kz3FHArhp1NgB74/3H9chL/Bz+uwiVYCusU9C8Eu/l3F9WvTbsig==}
 
@@ -567,13 +573,6 @@ packages:
 
   vscode-uri@3.1.0:
     resolution: {integrity: sha512-/BpdSx+yCQGnCvecbyXdxHDkuk55/G3xwnC0GqY4gmQ3j+A+g8kzzgB4Nk/SINjqn6+waqw3EgbVF2QKExkRxQ==}
-
-  vue-clip-track@0.1.1:
-    resolution: {integrity: sha512-ItpyICTdF9hiZ6OI26hI0lDiw11zO1vU68S6S61X6Wsgk1IY6+/XwqAJSGcbCXl+UGtrHzIuIOEgUYBy1/5MQw==}
-    engines: {node: '>=18.0.0'}
-    peerDependencies:
-      pinia: ^2.1.0
-      vue: ^3.3.0
 
   vue-demi@0.14.10:
     resolution: {integrity: sha512-nMZBOwuzabUO0nLgIcc6rycZEebF6eeUfaiQx9+WSk8e29IbLvPU9feI6tqW4kTo3hvoYAJkMh8n8D0fuISphg==}
@@ -895,6 +894,11 @@ snapshots:
       - '@vue/composition-api'
       - vue
 
+  '@webav/av-canvas@1.2.7':
+    dependencies:
+      '@webav/av-cliper': 1.2.7
+      '@webav/internal-utils': 1.2.7
+
   '@webav/av-cliper@1.2.7':
     dependencies:
       '@webav/internal-utils': 1.2.7
@@ -1068,11 +1072,6 @@ snapshots:
       fsevents: 2.3.3
 
   vscode-uri@3.1.0: {}
-
-  vue-clip-track@0.1.1(pinia@2.3.1(typescript@5.9.3)(vue@3.5.25(typescript@5.9.3)))(vue@3.5.25(typescript@5.9.3)):
-    dependencies:
-      pinia: 2.3.1(typescript@5.9.3)(vue@3.5.25(typescript@5.9.3))
-      vue: 3.5.25(typescript@5.9.3)
 
   vue-demi@0.14.10(vue@3.5.25(typescript@5.9.3)):
     dependencies:

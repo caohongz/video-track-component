@@ -9,8 +9,11 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
-      'vue': 'vue/dist/vue.esm-bundler.js',
+      'vue': resolve(__dirname, 'node_modules/vue'),
+      'pinia': resolve(__dirname, 'node_modules/pinia'),
     },
+    // 确保依赖去重
+    dedupe: ['vue', 'pinia'],
   },
   server: {
     port: 3010,
